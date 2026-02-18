@@ -35,10 +35,10 @@ data = StockHistoricalDataClient(API_KEY, SECRET_KEY)
 def cmd_account():
 	acct = trading.get_account()
 	print(json.dumps({
-		"equity": str(acct.equity),
-		"buying_power": str(acct.buying_power),
-		"cash": str(acct.cash),
-		"portfolio_value": str(acct.portfolio_value),
+		"equity": float(acct.equity),
+		"buying_power": float(acct.buying_power),
+		"cash": float(acct.cash),
+		"portfolio_value": float(acct.portfolio_value),
 		"day_trade_count": acct.daytrade_count,
 		"pattern_day_trader": acct.pattern_day_trader,
 	}, indent=2))
@@ -50,12 +50,12 @@ def cmd_positions():
 	for p in positions:
 		result.append({
 			"ticker": p.symbol,
-			"qty": str(p.qty),
-			"avg_entry": str(p.avg_entry_price),
-			"current_price": str(p.current_price),
-			"unrealized_pl": str(p.unrealized_pl),
-			"unrealized_plpc": str(p.unrealized_plpc),
-			"market_value": str(p.market_value),
+			"qty": int(p.qty),
+			"avg_entry": float(p.avg_entry_price),
+			"current_price": float(p.current_price),
+			"unrealized_pl": float(p.unrealized_pl),
+			"unrealized_plpc": float(p.unrealized_plpc),
+			"market_value": float(p.market_value),
 		})
 	print(json.dumps(result, indent=2))
 
@@ -78,10 +78,10 @@ def cmd_bars(symbols: str, days: int = 30):
 			result[ticker] = [
 				{
 					"date": b.timestamp.isoformat(),
-					"open": str(b.open),
-					"high": str(b.high),
-					"low": str(b.low),
-					"close": str(b.close),
+					"open": float(b.open),
+					"high": float(b.high),
+					"low": float(b.low),
+					"close": float(b.close),
 					"volume": b.volume,
 				}
 				for b in bars.data[ticker]
@@ -95,17 +95,17 @@ def cmd_snapshot(symbol: str):
 	s = snaps[symbol.upper()]
 	print(json.dumps({
 		"ticker": symbol.upper(),
-		"latest_trade_price": str(s.latest_trade.price) if s.latest_trade else None,
+		"latest_trade_price": float(s.latest_trade.price) if s.latest_trade else None,
 		"latest_trade_time": s.latest_trade.timestamp.isoformat() if s.latest_trade else None,
 		"minute_bar": {
-			"close": str(s.minute_bar.close),
+			"close": float(s.minute_bar.close),
 			"volume": s.minute_bar.volume,
 		} if s.minute_bar else None,
 		"daily_bar": {
-			"open": str(s.daily_bar.open),
-			"high": str(s.daily_bar.high),
-			"low": str(s.daily_bar.low),
-			"close": str(s.daily_bar.close),
+			"open": float(s.daily_bar.open),
+			"high": float(s.daily_bar.high),
+			"low": float(s.daily_bar.low),
+			"close": float(s.daily_bar.close),
 			"volume": s.daily_bar.volume,
 		} if s.daily_bar else None,
 	}, indent=2))
@@ -123,7 +123,7 @@ def cmd_buy(symbol: str, qty: int):
 		"status": "submitted",
 		"order_id": str(order.id),
 		"symbol": order.symbol,
-		"qty": str(order.qty),
+		"qty": int(order.qty),
 		"side": "buy",
 		"type": order.type.value,
 	}, indent=2))
@@ -141,7 +141,7 @@ def cmd_sell(symbol: str, qty: int):
 		"status": "submitted",
 		"order_id": str(order.id),
 		"symbol": order.symbol,
-		"qty": str(order.qty),
+		"qty": int(order.qty),
 		"side": "sell",
 		"type": order.type.value,
 	}, indent=2))

@@ -1,4 +1,4 @@
-# AutoTrader Heartbeat Checklist
+# AutoTrader Heartbeat Checklist — AGGRESSIVE MODE
 
 On every heartbeat, check the following:
 
@@ -6,13 +6,15 @@ On every heartbeat, check the following:
    - If NO: respond HEARTBEAT_OK
    - If YES: continue to step 2
 
-2. **Run a trading scan** using the autotrader skill:
-   - Call `python workspace/tools/alpaca_tool.py account` to check equity
-   - Call `python workspace/tools/alpaca_tool.py positions` to check holdings
-   - Check for stop-loss triggers (unrealized_plpc < -0.08) and sell immediately if found
-   - Scan the watchlist for RSI signals using `python workspace/tools/alpaca_tool.py bars`
-   - Execute trades if rules are met
-   - Log all decisions to workspace/logs/decisions.jsonl
-   - Send a summary message to the user
+2. **Run the aggressive trading scan** using `python scan_autotrader.py`:
+   - This script handles ALL logic: stop-losses, profit-taking, RSI buys/sells
+   - **Stop-loss**: -3% unrealized → sell all immediately
+   - **Profit-take**: +5% → sell all, +3% → sell half
+   - **RSI sell**: > 65 → sell all, > 55 → sell half
+   - **RSI buy**: < 20 → 20% equity, < 30 → 15% equity, < 40 → 10% equity
+   - No max position limit — deploy capital aggressively
+   - Log all decisions to logs/decisions.jsonl
 
-3. **Emergency check**: If any position has > 8% loss, sell immediately even outside a full scan
+3. **Emergency check**: If any position has > 3% loss, sell immediately even outside a full scan
+
+4. **Always report**: After running, give a brief summary of actions taken and current portfolio state
