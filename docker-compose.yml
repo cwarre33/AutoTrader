@@ -11,6 +11,7 @@ services:
       ALPACA_SECRET_KEY: ${ALPACA_SECRET_KEY}
       ALPACA_PAPER_TRADE: "True"
       OLLAMA_HOST: ${OLLAMA_HOST:-http://host.docker.internal:11434}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
     volumes:
       - ./openclaw-config:/home/node/.openclaw
       - ./workspace:/home/node/.openclaw/workspace
@@ -42,6 +43,7 @@ services:
       ALPACA_API_KEY: ${ALPACA_API_KEY}
       ALPACA_SECRET_KEY: ${ALPACA_SECRET_KEY}
       ALPACA_PAPER_TRADE: "True"
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
       BROWSER: echo
     volumes:
       - ./openclaw-config:/home/node/.openclaw
