@@ -121,6 +121,7 @@ def main():
         ["WMT","COST","HD","CRM","ORCL","AVGO","MU","QCOM","SOFI","PLTR"],
         ["HOOD","IBIT","TQQQ"]
     ]
+    all_rsi = {}  # for compact summary
 
     for tickers in groups:
         bars_data = get_bars(tickers)
@@ -134,6 +135,7 @@ def main():
             rsi = compute_rsi(close_prices)
             if rsi is None:
                 continue
+            all_rsi[ticker] = rsi
 
             if ticker in held_tickers:
                 # RSI sell rules (aggressive)
@@ -179,20 +181,48 @@ def main():
                 log_decision({"timestamp":now,"action":"buy","ticker":ticker,"shares":shares,
                               "rsi":rsi,"price":price,"allocation_pct":alloc_pct,"portfolio_value":equity})
 
-    # === Summary ===
-    summary_lines = []
-    summary_lines.append(f"AGGRESSIVE SCAN — Equity: ${equity:,.2f}, Buying power: ${buying_power:,.2f}")
-    if sell_candidates:
-        summary_lines.append("SELLS:")
-        for t, q, r, reason in sell_candidates:
-            summary_lines.append(f"  {t}: {q} shares — {reason}")
-    if buy_candidates:
-        summary_lines.append("BUYS:")
-        for t, q, r, reason in buy_candidates:
-            summary_lines.append(f"  {t}: {q} shares — {reason}")
-    if not buy_candidates and not sell_candidates:
-        summary_lines.append("No trade signals this cycle.")
-    print('\n'.join(summary_lines))
+    # === Compact summary (notification-friendly) ===
+    final_account = get_account()
+    final_positions = get_positions()
+    final_equity = float(final_account.get('equity', 0)) if final_account else equity
+    daily_pl = float(final_account.get('unrealized_pl', 0)) if final_account and 'unrealized_pl' in final_account else 0
+    n_pos = len(final_positions)
+
+    # Abbreviate equity for small screens (98.4K, 1.2M)
+    if final_equity >= 1_000_000:
+        eq_str = f"${final_equity/1_000_000:.1f}M"
+    else:
+        eq_str = f"${final_equity/1_000:.1f}K"
+    pl_sign = "+" if daily_pl >= 0 else ""
+    pl_pct = (daily_pl / final_equity * 100) if final_equity > 0 else 0
+
+    lines = []
+    # Line 1: equity, P&L, position count
+    lines.append(f"📊 {eq_str} · {pl_sign}${daily_pl:,.0f} ({pl_sign}{pl_pct:.2f}%) · {n_pos} positions")
+
+    # Line 2: actions or "no trades"
+    if sell_candidates or buy_candidates:
+        parts = []
+        if sell_candidates:
+            parts.append("Sold: " + ", ".join(f"{t} {q}" for t, q, _, _ in sell_candidates))
+        if buy_candidates:
+            parts.append("Bought: " + ", ".join(f"{t} {q}" for t, q, _, _ in buy_candidates))
+        lines.append(" · ".join(parts))
+    else:
+        lines.append("No trades this cycle.")
+
+    # Line 3: one-line context (best watch or status)
+    held = {p['ticker'] for p in final_positions}
+    watches = [(t, r) for t, r in all_rsi.items() if t not in held and r < 45]
+    watches.sort(key=lambda x: x[1])
+    if watches:
+        top = watches[:3]
+        line3 = "Watching: " + ", ".join(f"{t} RSI {r:.0f}" for t, r in top)
+        lines.append(line3)
+    else:
+        lines.append("No oversold signals. Holding.")
+
+    print("\n".join(lines))
 
 if __name__=="__main__":
     main()
