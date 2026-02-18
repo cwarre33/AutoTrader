@@ -1,26 +1,17 @@
-FROM python:3.11-slim
+FROM ghcr.io/openclaw/openclaw:latest
 
-# Create non-root user (required by HF Spaces)
-RUN useradd -m -u 1000 appuser
+USER root
 
-WORKDIR /app
+# Install Python 3 + pip for the Alpaca trading wrapper scripts
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends python3 python3-pip python3-venv && \
+    rm -rf /var/lib/apt/lists/*
 
-# Install dependencies first (layer caching)
-COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
+# Install alpaca-py into a venv accessible by the node user
+RUN python3 -m venv /opt/alpaca-venv && \
+    /opt/alpaca-venv/bin/pip install --no-cache-dir "alpaca-py>=0.30.0" pytz
 
-# Copy application code
-COPY . .
+# Make the venv's python the default python
+ENV PATH="/opt/alpaca-venv/bin:$PATH"
 
-# Create logs directory
-RUN mkdir -p logs && chown -R appuser:appuser /app
-
-USER appuser
-
-# Gradio config
-ENV GRADIO_SERVER_NAME=0.0.0.0
-ENV GRADIO_SERVER_PORT=7860
-
-EXPOSE 7860
-
-CMD ["python", "app.py"]
+USER node

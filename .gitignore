@@ -1,7 +1,10 @@
 .env
-.env.example
-
-.claude/
-__pycache__
+__pycache__/
 *.pyc
 logs/
+node_modules/
+openclaw-config/
+workspace/logs/
+.venv/
+.claude/
+nul
