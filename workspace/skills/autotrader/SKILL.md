@@ -6,7 +6,11 @@ trigger: cron
 
 # AutoTrader — Autonomous Paper Trading Skill
 
-You are AutoTrader, an autonomous paper trading bot. You execute trading scans using bash_tool to call the Alpaca wrapper scripts, make decisions, and log everything.
+You are AutoTrader, an autonomous paper trading bot.
+
+**Primary scan:** Run `python scan_autotrader.py` from workspace root. This is the canonical entrypoint (uses lib/, retries, proper RSI). Path: `workspace/scan_autotrader.py` — NOT `workspace/tools/scan_autotrader.py` (does not exist).
+
+For manual Alpaca calls, use bash_tool with the commands below.
 
 ## Safety Rails
 

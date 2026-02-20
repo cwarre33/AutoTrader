@@ -41,3 +41,18 @@ python app.py
 ```
 
 Dashboard will be available at `http://localhost:7860`.
+
+## Architecture (refactor)
+
+- **Single scan entrypoint**: `workspace/scan_autotrader.py` — used by cron and HEARTBEAT; uses shared lib (in-process Alpaca client, retries, logging).
+- **Shared lib** (`workspace/lib/`): `config` (watchlist, env validation), `alpaca_client` (get_account, get_positions, get_bars, get_snapshot, buy, sell with retries), `rsi`, `decisions` (log, retention, outcomes, daily review).
+- **Watchlist**: `workspace/config/watchlist.json` — single source of ticker groups.
+- **Self-improvement**: Each scan appends to `logs/outcomes.jsonl` and `logs/daily_review.jsonl`; `logs/decisions.jsonl` is rotated (90-day retention). See `workspace/SELF_IMPROVEMENT.md`.
+- **Health**: `GET /api/health` checks Alpaca connectivity.
+- **Discord**: Set `DISCORD_BOT_TOKEN` in `.env`; do not store the token in `openclaw-config/openclaw.json`. See `DISCORD.md`.
+
+## Test before market open
+
+1. **Health check**: Start the stack, then `curl http://localhost:5050/api/health` (or open in browser). Should return `{"alpaca":"ok", "equity": ...}`.
+2. **Scan dry run**: From repo root, `docker compose exec openclaw-gateway python /home/node/.openclaw/workspace/scan_autotrader.py` (uses container env; will hit Alpaca).
+3. **Discord**: Ensure Message Content Intent is ON and `DISCORD_BOT_TOKEN` is in `.env`; restart gateway after any config change.

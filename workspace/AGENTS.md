@@ -117,13 +117,28 @@ Reactions are lightweight social signals. Humans use them constantly — they sa
 
 Skills provide your tools. When you need one, check its `SKILL.md`. Keep local notes (camera names, SSH details, voice preferences) in `TOOLS.md`.
 
+**Scan path:** Run `python scan_autotrader.py` from workspace root. The file is at `workspace/scan_autotrader.py` — never use `workspace/tools/scan_autotrader.py` (does not exist) or `aggressive_scan.py` (deprecated).
+
 **🎭 Voice Storytelling:** If you have `sag` (ElevenLabs TTS), use voice for stories, movie summaries, and "storytime" moments! Way more engaging than walls of text. Surprise people with funny voices.
 
 **📝 Platform Formatting:**
 
+- **Discord:** Send plain text only. Never output raw JSON, Python dicts, or structures like `[{'type': 'text', 'text': '...'}]` — Discord shows exactly what you send.
 - **Discord/WhatsApp:** No markdown tables! Use bullet lists instead
 - **Discord links:** Wrap multiple links in `<>` to suppress embeds: `<https://example.com>`
 - **WhatsApp:** No headers — use **bold** or CAPS for emphasis
+
+**📱 Mobile-First Responses:**
+
+ALL Discord messages MUST follow these rules:
+- **Plain text only.** Never output raw JSON, Python dicts, code, or message structures like `[{'type': 'text', 'text': '...'}]`. Discord displays whatever you send — send clean, readable text.
+- **First line is the headline** — it must fit in a mobile push notification (~80 chars). Lead with the key info: what happened, the number, the result.
+- **Keep total response under 6 lines.** If you need more, you're over-explaining.
+- **No preambles.** Don't start with "Here's what I found" or "Let me explain". Just answer.
+- **No raw JSON or code blocks** unless the user explicitly asks for data.
+- **Scan reports**: Post ONLY the script's output. No preambles ("Here's the result", "I'll run", "The scan is complete", etc.). No headers. Just the raw output lines. The script output IS the report.
+- **Questions**: Answer in 2-4 lines max. Use bullet points for lists. No essays.
+- **Numbers over narratives.** "$97.8K · +$27 (+0.03%)" beats "The portfolio is currently valued at approximately ninety-seven thousand eight hundred dollars with a modest gain of twenty-seven dollars."
 
 ## 💓 Heartbeats - Be Proactive!
 

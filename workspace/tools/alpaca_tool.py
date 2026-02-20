@@ -24,10 +24,16 @@ from alpaca.data.historical import StockHistoricalDataClient
 from alpaca.data.requests import StockBarsRequest, StockSnapshotRequest
 from alpaca.data.timeframe import TimeFrame
 
-API_KEY = os.environ["ALPACA_API_KEY"]
-SECRET_KEY = os.environ["ALPACA_SECRET_KEY"]
-PAPER = os.environ.get("ALPACA_PAPER_TRADE", "True").lower() in ("true", "1", "yes")
+def _env():
+    API_KEY = os.environ.get("ALPACA_API_KEY")
+    SECRET_KEY = os.environ.get("ALPACA_SECRET_KEY")
+    if not API_KEY or not SECRET_KEY:
+        print(json.dumps({"error": "ALPACA_API_KEY and ALPACA_SECRET_KEY must be set"}), file=sys.stderr)
+        sys.exit(1)
+    PAPER = os.environ.get("ALPACA_PAPER_TRADE", "True").lower() in ("true", "1", "yes")
+    return API_KEY, SECRET_KEY, PAPER
 
+API_KEY, SECRET_KEY, PAPER = _env()
 trading = TradingClient(API_KEY, SECRET_KEY, paper=PAPER)
 data = StockHistoricalDataClient(API_KEY, SECRET_KEY)
 
@@ -61,32 +67,72 @@ def cmd_positions():
 
 
 def cmd_bars(symbols: str, days: int = 30):
-	tickers = [s.strip().upper() for s in symbols.split(",")]
-	end = datetime.now()
-	start = end - timedelta(days=days)
-	req = StockBarsRequest(
-		symbol_or_symbols=tickers,
-		timeframe=TimeFrame.Day,
-		start=start,
-		end=end,
-		feed="iex",
-	)
-	bars = data.get_stock_bars(req)
-	result = {}
-	for ticker in tickers:
-		if ticker in bars.data:
-			result[ticker] = [
-				{
-					"date": b.timestamp.isoformat(),
-					"open": float(b.open),
-					"high": float(b.high),
-					"low": float(b.low),
-					"close": float(b.close),
-					"volume": b.volume,
-				}
-				for b in bars.data[ticker]
-			]
-	print(json.dumps(result, indent=2))
+	tickers = [s.strip().upper() for s in symbols.split(",") if s.strip()]
+	if not tickers:
+		print(json.dumps({"error": "No valid tickers provided"}), file=sys.stderr)
+		sys.exit(1)
+	try:
+		end = datetime.now()
+		start = end - timedelta(days=days)
+		req = StockBarsRequest(
+			symbol_or_symbols=tickers,
+			timeframe=TimeFrame.Day,
+			start=start,
+			end=end,
+			feed="iex",
+		)
+		bars = data.get_stock_bars(req)
+		result = {}
+		data_keys = list(bars.data.keys()) if hasattr(bars.data, "keys") else []
+		# Handle API returning data keyed by full comma-separated string (KeyError workaround)
+		for ticker in tickers:
+			bar_list = None
+			if ticker in bars.data:
+				bar_list = bars.data[ticker]
+			else:
+				for k in data_keys:
+					if isinstance(k, str) and k.upper() == ticker.upper():
+						bar_list = bars.data[k]
+						break
+			if bar_list is not None:
+				result[ticker] = [
+					{
+						"date": b.timestamp.isoformat(),
+						"open": float(b.open),
+						"high": float(b.high),
+						"low": float(b.low),
+						"close": float(b.close),
+						"volume": b.volume,
+					}
+					for b in bar_list
+				]
+			else:
+				result[ticker] = []
+		print(json.dumps(result, indent=2))
+	except KeyError as e:
+		# API may return unexpected key format; fetch per-symbol as fallback
+		result = {}
+		for ticker in tickers:
+			try:
+				req = StockBarsRequest(
+					symbol_or_symbols=[ticker],
+					timeframe=TimeFrame.Day,
+					start=datetime.now() - timedelta(days=days),
+					end=datetime.now(),
+					feed="iex",
+				)
+				b = data.get_stock_bars(req)
+				if ticker in b.data:
+					result[ticker] = [
+						{"date": bar.timestamp.isoformat(), "open": float(bar.open), "high": float(bar.high),
+						 "low": float(bar.low), "close": float(bar.close), "volume": bar.volume}
+						for bar in b.data[ticker]
+					]
+				else:
+					result[ticker] = []
+			except Exception:
+				result[ticker] = []
+		print(json.dumps(result, indent=2))
 
 
 def cmd_snapshot(symbol: str):
@@ -205,7 +251,11 @@ def main():
 		"sell": lambda: cmd_sell(args.symbol, args.qty),
 		"actions": lambda: cmd_actions(args.symbol),
 	}
-	cmds[args.command]()
+	try:
+		cmds[args.command]()
+	except Exception as e:
+		print(json.dumps({"error": str(e)}), file=sys.stderr)
+		sys.exit(1)
 
 
 if __name__ == "__main__":

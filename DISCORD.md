@@ -29,7 +29,7 @@ Right now the config is set so the bot responds to **every** message in #general
 
 ## 3. Confirm token and logs
 
-- **Token**: The gateway uses the Discord token from `openclaw-config/openclaw.json` (`channels.discord.token`). Your `.env` can override with `DISCORD_BOT_TOKEN`; the gateway now receives that env var.
+- **Token**: Do **not** put the Discord bot token in `openclaw.json`. Set `DISCORD_BOT_TOKEN` in your `.env`; the gateway receives it via docker-compose and OpenClaw uses it when `channels.discord.token` is empty.
 - **Logs**: After restart, watch gateway logs for Discord errors:
   ```bash
   docker compose logs -f openclaw-gateway
@@ -40,4 +40,28 @@ Right now the config is set so the bot responds to **every** message in #general
 
 Once the bot is receiving and replying, to make it answer only when @mentioned:
 
-In `openclaw-config/openclaw.json`, under `channels.discord.guilds["1473759045197500516"]` and under the channel `1473759046073843714`, set `"requireMention": true`, then restart the gateway.
+In `openclaw-config/openclaw.json`, under `channels.discord.guilds["1473759045197500516"]` and under the channel `1474502611393581267`, set `"requireMention": true`, then restart the gateway.
+
+## 5. "channels unresolved" in logs
+
+If you see `channels unresolved: <guildId>/<channelId>`:
+
+- **Verify IDs**: In Discord, enable Developer Mode (Settings → Advanced), right-click the channel → Copy ID. Ensure `openclaw-config/openclaw.json` has the correct guild and channel IDs under `channels.discord.guilds`.
+- **Bot permissions**: The bot must have "View Channel" and "Read Message History" in that channel.
+- **Restart**: After fixing config, run `docker compose restart openclaw-gateway`.
+
+## 6. "Action send requires a target"
+
+If you see `⚠️ ✉️ Message: send failed: Action send requires a target` in Discord:
+
+- This usually means the cron/heartbeat delivery can't resolve the channel. It's related to "channels unresolved" in the logs.
+- **Fix**: Verify guild and channel IDs in `openclaw-config/openclaw.json` and in the cron job's `delivery.to` field (`channel:1474502611393581267`).
+- Ensure the bot is in the server and has access to that channel. Restart the gateway after fixing.
+
+## 7. Config errors that block Discord
+
+- **"Unrecognized key: botToken"**  
+  OpenClaw expects `channels.discord.token`, not `botToken`. If your config has `botToken` (e.g. after an older setup or doctor), run **`openclaw doctor --fix`** so it removes the invalid key. Keep using `DISCORD_BOT_TOKEN` in the environment; do not put the token in the JSON file.
+
+- **"Channel is required (no configured channels detected)"** / **"Ambiguous Discord recipient"**  
+  Replies must target the channel explicitly. Ensure the Discord channel is listed under `channels.discord.guilds.<guildId>.channels.<channelId>` with `allow: true`. If delivery recovery fails with "Use user:... or channel:...", the runtime config should use the channel (not the user ID alone) for sending; restart the gateway after fixing the config.

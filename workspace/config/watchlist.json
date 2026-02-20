@@ -1,0 +1,8 @@
+{
+  "groups": [
+    ["AAPL", "MSFT", "NVDA", "TSLA", "AMZN", "META", "GOOG", "AMD", "INTC", "BA"],
+    ["DIS", "NFLX", "JPM", "V", "MA", "UNH", "XOM", "CVX", "PFE", "KO"],
+    ["WMT", "COST", "HD", "CRM", "ORCL", "AVGO", "MU", "QCOM", "SOFI", "PLTR"],
+    ["HOOD", "IBIT", "TQQQ"]
+  ]
+}

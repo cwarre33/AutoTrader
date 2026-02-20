@@ -168,6 +168,27 @@ def api_chat():
         return jsonify({"error": str(e)}), 500
 
 
+@app.route("/api/health")
+def api_health():
+    """Trading pipeline health: Alpaca connectivity."""
+    try:
+        result = subprocess.run(
+            ["docker", "exec", GATEWAY_CONTAINER, "python", "/home/node/.openclaw/workspace/tools/alpaca_tool.py", "account"],
+            capture_output=True, text=True, timeout=15,
+            env={**os.environ, "MSYS_NO_PATHCONV": "1"},
+        )
+        if result.returncode != 0:
+            return jsonify({"alpaca": "error", "message": (result.stderr or result.stdout or "non-zero exit")[:500]}), 503
+        data = json.loads(result.stdout)
+        if "equity" not in data:
+            return jsonify({"alpaca": "error", "message": "invalid response"}), 503
+        return jsonify({"alpaca": "ok", "equity": data.get("equity")})
+    except subprocess.TimeoutExpired:
+        return jsonify({"alpaca": "error", "message": "timeout"}), 503
+    except Exception as e:
+        return jsonify({"alpaca": "error", "message": str(e)}), 503
+
+
 @app.route("/api/status")
 def api_status():
     """Get bot status: gateway running, cron jobs, last heartbeat."""

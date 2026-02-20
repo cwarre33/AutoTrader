@@ -1,5 +1,19 @@
 # Available Trading Tools
 
+## Scan (Primary Entrypoint)
+
+**Always use `scan_autotrader.py`** for portfolio scans (heartbeat, cron, Discord):
+
+```bash
+python scan_autotrader.py
+```
+
+Run from workspace root. Path: `workspace/scan_autotrader.py` (NOT `workspace/tools/scan_autotrader.py`).
+
+---
+
+## Alpaca CLI (tools/alpaca_tool.py)
+
 You have access to the Alpaca paper trading API via a Python CLI wrapper. All commands return JSON.
 
 ## Usage

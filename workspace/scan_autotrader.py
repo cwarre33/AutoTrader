@@ -1,128 +1,89 @@
 #!/usr/bin/env python3
-"""Aggressive RSI mean-reversion scanner.
+"""Aggressive RSI mean-reversion scanner. Single entrypoint; uses shared lib."""
+import logging
+import math
+import sys
+from datetime import datetime
 
-Strategy: Buy dips hard, take profits fast, cut losses early.
-- Buy:  RSI < 40 → 10% equity, RSI < 30 → 15% equity, RSI < 20 → 20% equity
-- Sell: RSI > 65 → sell all, RSI > 55 → sell half
-- Profit-take: +5% unrealized → sell all, +3% → sell half
-- Stop-loss: -3% unrealized → sell all
-- No max position limit (deploy capital aggressively)
-"""
-import subprocess, json, os, sys, datetime, math
+# Run from workspace root so lib is importable
+import os
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-def run_cmd(cmd):
-    result = subprocess.run(cmd, shell=True, capture_output=True, text=True)
-    if result.returncode != 0:
-        print(f'Command failed: {cmd}\n{result.stderr}', file=sys.stderr)
-        return None
-    try:
-        return json.loads(result.stdout)
-    except json.JSONDecodeError:
-        return result.stdout.strip()
+from lib.config import validate_env, load_watchlist
+from lib.alpaca_client import get_account, get_positions, get_bars, get_snapshot, get_snapshots_batch, buy, sell
+from lib.rsi import compute_rsi
+from lib.decisions import log_decision, load_recent_decisions, rotate_decisions_log, log_outcome, append_daily_review
 
-def get_account():
-    return run_cmd('python tools/alpaca_tool.py account')
+try:
+    from lib.discord_post import post_trades, update_dashboard
+except ImportError:
+    post_trades = lambda _: False
+    update_dashboard = lambda _: False
 
-def get_positions():
-    return run_cmd('python tools/alpaca_tool.py positions') or []
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+    datefmt="%Y-%m-%d %H:%M:%S",
+    stream=sys.stderr,
+)
+logger = logging.getLogger("autotrader")
 
-def sell_position(ticker, qty):
-    return run_cmd(f'python tools/alpaca_tool.py sell {ticker} {qty}')
+# Strategy: Buy dips hard, take profits fast, cut losses early.
+# Buy:  RSI < 40 → 10% equity, RSI < 30 → 15% equity, RSI < 20 → 20% equity
+# Sell: RSI > 65 → sell all, RSI > 55 → sell half
+# Profit-take: +5% unrealized → sell all, +3% → sell half
+# Stop-loss: -3% unrealized → sell all
 
-def buy_position(ticker, qty):
-    return run_cmd(f'python tools/alpaca_tool.py buy {ticker} {qty}')
-
-def get_bars(tickers):
-    tickers_str = ','.join(tickers)
-    return run_cmd(f'python tools/alpaca_tool.py bars {tickers_str} --days 30')
-
-def get_snapshot(ticker):
-    return run_cmd(f'python tools/alpaca_tool.py snapshot {ticker}')
-
-def compute_rsi(close_prices, period=14):
-    if len(close_prices) < period+1:
-        return None
-    gains = []
-    losses = []
-    for i in range(1, period+1):
-        change = close_prices[i] - close_prices[i-1]
-        gains.append(max(change,0))
-        losses.append(abs(min(change,0)))
-    avg_gain = sum(gains)/period
-    avg_loss = sum(losses)/period
-    for i in range(period+1, len(close_prices)):
-        change = close_prices[i] - close_prices[i-1]
-        gain = max(change,0)
-        loss = abs(min(change,0))
-        avg_gain = (avg_gain*(period-1) + gain)/period
-        avg_loss = (avg_loss*(period-1) + loss)/period
-    if avg_loss == 0:
-        return 100.0
-    rs = avg_gain/avg_loss
-    return 100 - (100/(1+rs))
-
-def log_decision(entry):
-    os.makedirs('logs', exist_ok=True)
-    with open('logs/decisions.jsonl','a') as f:
-        f.write(json.dumps(entry)+'\n')
 
 def main():
-    now = datetime.datetime.utcnow().isoformat()+'Z'
+    validate_env()
+    now = datetime.utcnow().isoformat() + "Z"
+    today = now[:10]
+
     account = get_account()
     if not account:
-        print('Failed to get account')
+        logger.error("Failed to get account")
+        print("Failed to get account", file=sys.stderr)
         return
-    equity = float(account.get('equity',0))
-    buying_power = float(account.get('buying_power',0))
+    equity = float(account.get("equity", 0))
+    buying_power = float(account.get("buying_power", 0))
     positions = get_positions()
 
     buy_candidates = []
     sell_candidates = []
+    groups = load_watchlist()
+    all_rsi = {}
 
-    # === PHASE 1: Aggressive stop-loss and profit-taking on existing positions ===
+    # === PHASE 1: Stop-loss and profit-taking on existing positions ===
     for pos in positions:
-        ticker = pos['ticker']
-        qty = int(pos['qty'])
-        plpc = float(pos.get('unrealized_plpc',0) or 0)
+        ticker = pos["ticker"]
+        qty = int(pos["qty"])
+        plpc = float(pos.get("unrealized_plpc", 0) or 0)
 
-        # Tight stop-loss: -3% → dump everything
         if plpc < -0.03:
-            sell_res = sell_position(ticker, qty)
-            sell_candidates.append((ticker, qty, 0, 'stop-loss'))
-            log_decision({"timestamp":now,"action":"sell","ticker":ticker,"shares":qty,
-                          "reason":"stop-loss -3%","plpc":plpc,"price":pos.get('current_price'),"portfolio_value":equity})
+            sell(ticker, qty)
+            sell_candidates.append((ticker, qty, 0, "stop-loss"))
+            log_decision({"timestamp": now, "action": "sell", "ticker": ticker, "shares": qty, "reason": "stop-loss -3%", "plpc": plpc, "price": pos.get("current_price"), "portfolio_value": equity})
+            log_outcome({"timestamp": now, "ticker": ticker, "action": "sell", "reason": "stop-loss", "plpc": plpc, "shares": qty})
             continue
-
-        # Profit-take: +5% → sell all
         if plpc >= 0.05:
-            sell_res = sell_position(ticker, qty)
-            sell_candidates.append((ticker, qty, 0, 'profit-take-full'))
-            log_decision({"timestamp":now,"action":"sell","ticker":ticker,"shares":qty,
-                          "reason":"profit-take +5%","plpc":plpc,"price":pos.get('current_price'),"portfolio_value":equity})
+            sell(ticker, qty)
+            sell_candidates.append((ticker, qty, 0, "profit-take-full"))
+            log_decision({"timestamp": now, "action": "sell", "ticker": ticker, "shares": qty, "reason": "profit-take +5%", "plpc": plpc, "price": pos.get("current_price"), "portfolio_value": equity})
+            log_outcome({"timestamp": now, "ticker": ticker, "action": "sell", "reason": "profit-take-full", "plpc": plpc, "shares": qty})
             continue
-
-        # Profit-take: +3% → sell half
         if plpc >= 0.03:
             sell_qty = qty // 2
             if sell_qty > 0:
-                sell_res = sell_position(ticker, sell_qty)
-                sell_candidates.append((ticker, sell_qty, 0, 'profit-take-half'))
-                log_decision({"timestamp":now,"action":"sell","ticker":ticker,"shares":sell_qty,
-                              "reason":"profit-take +3% half","plpc":plpc,"price":pos.get('current_price'),"portfolio_value":equity})
+                sell(ticker, sell_qty)
+                sell_candidates.append((ticker, sell_qty, 0, "profit-take-half"))
+                log_decision({"timestamp": now, "action": "sell", "ticker": ticker, "shares": sell_qty, "reason": "profit-take +3% half", "plpc": plpc, "price": pos.get("current_price"), "portfolio_value": equity})
+                log_outcome({"timestamp": now, "ticker": ticker, "action": "sell", "reason": "profit-take-half", "plpc": plpc, "shares": sell_qty})
 
-    # Refresh positions after sells
     positions = get_positions()
-    held_tickers = {p['ticker'] for p in positions}
+    held_tickers = {p["ticker"] for p in positions}
 
     # === PHASE 2: RSI-based sells and buys ===
-    groups = [
-        ["AAPL","MSFT","NVDA","TSLA","AMZN","META","GOOG","AMD","INTC","BA"],
-        ["DIS","NFLX","JPM","V","MA","UNH","XOM","CVX","PFE","KO"],
-        ["WMT","COST","HD","CRM","ORCL","AVGO","MU","QCOM","SOFI","PLTR"],
-        ["HOOD","IBIT","TQQQ"]
-    ]
-    all_rsi = {}  # for compact summary
-
     for tickers in groups:
         bars_data = get_bars(tickers)
         if not bars_data:
@@ -131,98 +92,121 @@ def main():
             if ticker not in bars_data:
                 continue
             bars = bars_data[ticker]
-            close_prices = [float(b['close']) for b in bars]
+            close_prices = [float(b["close"]) for b in bars]
             rsi = compute_rsi(close_prices)
             if rsi is None:
                 continue
             all_rsi[ticker] = rsi
 
             if ticker in held_tickers:
-                # RSI sell rules (aggressive)
-                pos = next((p for p in positions if p['ticker']==ticker), None)
+                pos = next((p for p in positions if p["ticker"] == ticker), None)
                 if not pos:
                     continue
-                qty = int(pos['qty'])
+                qty = int(pos["qty"])
                 sell_qty = 0
-                reason = ''
+                reason = ""
                 if rsi > 65:
                     sell_qty = qty
-                    reason = f'RSI sell-all ({rsi:.1f})'
+                    reason = f"RSI sell-all ({rsi:.1f})"
                 elif rsi > 55:
                     sell_qty = qty // 2
-                    reason = f'RSI sell-half ({rsi:.1f})'
-
+                    reason = f"RSI sell-half ({rsi:.1f})"
                 if sell_qty > 0:
-                    sell_res = sell_position(ticker, sell_qty)
+                    sell(ticker, sell_qty)
                     sell_candidates.append((ticker, sell_qty, rsi, reason))
-                    log_decision({"timestamp":now,"action":"sell","ticker":ticker,"shares":sell_qty,
-                                  "reason":reason,"rsi":rsi,"price":pos.get('current_price'),"portfolio_value":equity})
+                    log_decision({"timestamp": now, "action": "sell", "ticker": ticker, "shares": sell_qty, "reason": reason, "rsi": rsi, "price": pos.get("current_price"), "portfolio_value": equity})
+                    log_outcome({"timestamp": now, "ticker": ticker, "action": "sell", "reason": reason, "rsi": rsi, "shares": sell_qty})
             else:
-                # Aggressive buy rules
-                if rsi < 20:
-                    alloc_pct = 0.20  # 20% equity for deeply oversold
-                elif rsi < 30:
-                    alloc_pct = 0.15  # 15% equity for oversold
-                elif rsi < 40:
-                    alloc_pct = 0.10  # 10% equity for dipping
-                else:
+                if rsi >= 40:
                     continue
-
+                alloc_pct = 0.20 if rsi < 20 else 0.15 if rsi < 30 else 0.10
                 snapshot = get_snapshot(ticker)
-                price = float(snapshot.get('latest_trade_price', 0)) if isinstance(snapshot, dict) else 0
+                price = float(snapshot.get("latest_trade_price", 0)) if isinstance(snapshot, dict) else 0
                 if price <= 0:
                     continue
-                allocation = equity * alloc_pct
-                shares = math.floor(allocation / price)
+                shares = math.floor(equity * alloc_pct / price)
                 if shares < 1:
                     continue
-                buy_res = buy_position(ticker, shares)
-                buy_candidates.append((ticker, shares, rsi, f'RSI buy ({rsi:.1f})'))
-                log_decision({"timestamp":now,"action":"buy","ticker":ticker,"shares":shares,
-                              "rsi":rsi,"price":price,"allocation_pct":alloc_pct,"portfolio_value":equity})
+                buy(ticker, shares)
+                buy_candidates.append((ticker, shares, rsi, f"RSI buy ({rsi:.1f})"))
+                log_decision({"timestamp": now, "action": "buy", "ticker": ticker, "shares": shares, "rsi": rsi, "price": price, "allocation_pct": alloc_pct, "portfolio_value": equity})
+                log_outcome({"timestamp": now, "ticker": ticker, "action": "buy", "reason": f"RSI {rsi:.1f}", "shares": shares, "price": price})
 
-    # === Compact summary (notification-friendly) ===
+    # === Summary (notification-friendly) ===
     final_account = get_account()
     final_positions = get_positions()
-    final_equity = float(final_account.get('equity', 0)) if final_account else equity
-    daily_pl = float(final_account.get('unrealized_pl', 0)) if final_account and 'unrealized_pl' in final_account else 0
+    final_equity = float(final_account.get("equity", 0)) if final_account else equity
+    daily_pl = sum(float(p.get("unrealized_pl", 0) or 0) for p in final_positions)
     n_pos = len(final_positions)
 
-    # Abbreviate equity for small screens (98.4K, 1.2M)
-    if final_equity >= 1_000_000:
-        eq_str = f"${final_equity/1_000_000:.1f}M"
-    else:
-        eq_str = f"${final_equity/1_000:.1f}K"
+    eq_str = f"${final_equity/1_000_000:.1f}M" if final_equity >= 1_000_000 else f"${final_equity/1_000:.1f}K"
     pl_sign = "+" if daily_pl >= 0 else ""
     pl_pct = (daily_pl / final_equity * 100) if final_equity > 0 else 0
 
-    lines = []
-    # Line 1: equity, P&L, position count
-    lines.append(f"📊 {eq_str} · {pl_sign}${daily_pl:,.0f} ({pl_sign}{pl_pct:.2f}%) · {n_pos} positions")
+    sold_str = "Sold: " + ", ".join(f"{t} {q}" for t, q, _, _ in sell_candidates) if sell_candidates else ""
+    bought_str = "Bought: " + ", ".join(f"{t} {q}" for t, q, _, _ in buy_candidates) if buy_candidates else ""
+    action_str = " · ".join(filter(None, [sold_str, bought_str])) if (sell_candidates or buy_candidates) else "No trades this cycle."
 
-    # Line 2: actions or "no trades"
+    # Post trades to Discord trades channel when any executed
     if sell_candidates or buy_candidates:
-        parts = []
-        if sell_candidates:
-            parts.append("Sold: " + ", ".join(f"{t} {q}" for t, q, _, _ in sell_candidates))
-        if buy_candidates:
-            parts.append("Bought: " + ", ".join(f"{t} {q}" for t, q, _, _ in buy_candidates))
-        lines.append(" · ".join(parts))
-    else:
-        lines.append("No trades this cycle.")
-
-    # Line 3: one-line context (best watch or status)
-    held = {p['ticker'] for p in final_positions}
-    watches = [(t, r) for t, r in all_rsi.items() if t not in held and r < 45]
-    watches.sort(key=lambda x: x[1])
-    if watches:
-        top = watches[:3]
-        line3 = "Watching: " + ", ".join(f"{t} RSI {r:.0f}" for t, r in top)
-        lines.append(line3)
-    else:
-        lines.append("No oversold signals. Holding.")
-
+        trades_lines = []
+        for t, q, r, reason in sell_candidates:
+            trades_lines.append(f"🔴 SELL {t} {q} shares — {reason}")
+        for t, q, r, reason in buy_candidates:
+            trades_lines.append(f"🟢 BUY {t} {q} shares — {reason}")
+        if post_trades("\n".join(trades_lines)):
+            logger.info("Posted %d trades to Discord", len(sell_candidates) + len(buy_candidates))
+        else:
+            logger.warning("Failed to post trades to Discord")
+    lines = [
+        f"📊 {eq_str} · {pl_sign}${daily_pl:,.0f} ({pl_sign}{pl_pct:.2f}%) · {n_pos} positions",
+        action_str,
+    ]
+    held = {p["ticker"] for p in final_positions}
+    watches = sorted([(t, r) for t, r in all_rsi.items() if t not in held and r < 45], key=lambda x: x[1])[:3]
+    lines.append("Watching: " + ", ".join(f"{t} RSI {r:.0f}" for t, r in watches) if watches else "No oversold signals. Holding.")
     print("\n".join(lines))
 
-if __name__=="__main__":
+    # Self-improvement: daily review and retention
+    decisions_today = [d for d in load_recent_decisions(limit=500) if d.get("timestamp", "")[:10] == today]
+    append_daily_review({
+        "date": today,
+        "equity": final_equity,
+        "daily_pl": daily_pl,
+        "trades": len([d for d in decisions_today if d.get("action") in ("buy", "sell")]),
+        "buys": len([d for d in decisions_today if d.get("action") == "buy"]),
+        "sells": len([d for d in decisions_today if d.get("action") == "sell"]),
+        "positions": n_pos,
+    })
+    rotate_decisions_log()
+    logger.debug("Scan complete: equity=%s positions=%s trades=%s", eq_str, n_pos, len(sell_candidates) + len(buy_candidates))
+
+    # Update static dashboard with latest data (edits same message each cycle)
+    dashboard_lines = [
+        "**📊 AutoTrader Dashboard**",
+        f"Equity: {eq_str} · P&L: {pl_sign}${daily_pl:,.0f} ({pl_sign}{pl_pct:.2f}%)",
+        f"Positions: {n_pos}",
+        "",
+        "**Holdings:**",
+    ]
+    for p in sorted(final_positions, key=lambda x: -float(x.get("market_value", 0))):
+        mv = float(p.get("market_value", 0))
+        plpc = float(p.get("unrealized_plpc", 0) or 0)
+        sign = "+" if plpc >= 0 else ""
+        dashboard_lines.append(f"• {p['ticker']}: ${mv:,.0f} ({sign}{plpc*100:.1f}%)")
+    if watches:
+        dashboard_lines.append("")
+        dashboard_lines.append("**Watching:** " + ", ".join(f"{t} RSI {r:.0f}" for t, r in watches))
+    dashboard_lines.append("")
+    dashboard_lines.append(f"_Updated {now[:19].replace('T', ' ')} UTC_")
+    try:
+        if update_dashboard("\n".join(dashboard_lines)):
+            logger.info("Updated Discord dashboard")
+        else:
+            logger.warning("Failed to update Discord dashboard")
+    except Exception as e:
+        logger.warning("Dashboard update error: %s", e)
+
+
+if __name__ == "__main__":
     main()

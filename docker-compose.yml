@@ -3,19 +3,25 @@ services:
     build: .
     image: autotrader-openclaw:latest
     container_name: autotrader-gateway
+    env_file: .env
     environment:
       HOME: /home/node
       TERM: xterm-256color
       OPENCLAW_GATEWAY_TOKEN: ${OPENCLAW_GATEWAY_TOKEN}
       DISCORD_BOT_TOKEN: ${DISCORD_BOT_TOKEN:-}
+      DISCORD_TRADES_CHANNEL_ID: "1474503672951079024"
+      DISCORD_CYCLES_CHANNEL_ID: "1474503699903680756"
+      DISCORD_DASHBOARD_CHANNEL_ID: "${DISCORD_DASHBOARD_CHANNEL_ID:-1474505225866969098}"
+      DISCORD_DASHBOARD_WEBHOOK_URL: "${DISCORD_DASHBOARD_WEBHOOK_URL:-}"
+      DISCORD_TRADES_WEBHOOK_URL: "${DISCORD_TRADES_WEBHOOK_URL:-}"
       ALPACA_API_KEY: ${ALPACA_API_KEY}
       ALPACA_SECRET_KEY: ${ALPACA_SECRET_KEY}
       ALPACA_PAPER_TRADE: "True"
-      OLLAMA_HOST: ${OLLAMA_HOST:-http://host.docker.internal:11434}
       OPENAI_API_KEY: ${OPENAI_API_KEY:-}
     volumes:
       - ./openclaw-config:/home/node/.openclaw
       - ./workspace:/home/node/.openclaw/workspace
+      - ./.env:/home/node/.openclaw/workspace/.env:ro
     ports:
       - "${OPENCLAW_GATEWAY_PORT:-18789}:18789"
     extra_hosts:
