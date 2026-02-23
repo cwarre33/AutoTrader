@@ -5,8 +5,8 @@ import time
 from datetime import datetime, timedelta
 
 from alpaca.trading.client import TradingClient
-from alpaca.trading.requests import MarketOrderRequest
-from alpaca.trading.enums import OrderSide, TimeInForce
+from alpaca.trading.requests import MarketOrderRequest, GetPortfolioHistoryRequest, GetOrdersRequest
+from alpaca.trading.enums import OrderSide, TimeInForce, QueryOrderStatus
 from alpaca.data.historical import StockHistoricalDataClient
 from alpaca.data.requests import StockBarsRequest, StockSnapshotRequest
 from alpaca.data.timeframe import TimeFrame
@@ -72,22 +72,49 @@ def get_account():
     return _retry(_)
 
 
+def get_open_sell_qty_by_symbol():
+    """Return dict of symbol -> total qty in open SELL orders. Used when qty_available is None."""
+    def _():
+        req = GetOrdersRequest(status=QueryOrderStatus.OPEN)
+        orders = _trading_client().get_orders(req)
+        out = {}
+        for o in orders:
+            if o.side == OrderSide.SELL and o.symbol:
+                sym = o.symbol.upper()
+                try:
+                    qty_val = int(float(o.qty or 0) - float(o.filled_qty or 0))
+                except (TypeError, ValueError):
+                    qty_val = int(o.qty or 0)
+                out[sym] = out.get(sym, 0) + max(0, qty_val)
+        return out
+    return _retry(_)
+
+
 def get_positions():
-    """Return list of position dicts."""
+    """Return list of position dicts with available_qty (excludes shares held by open orders)."""
     def _():
         positions = _trading_client().get_all_positions()
-        return [
-            {
+        sell_qty_by_symbol = get_open_sell_qty_by_symbol()
+        result = []
+        for p in positions:
+            qty = int(p.qty)
+            qty_avail = getattr(p, "qty_available", None)
+            if qty_avail is not None and str(qty_avail).strip() != "":
+                available_qty = int(float(qty_avail))
+            else:
+                held = sell_qty_by_symbol.get(p.symbol.upper(), 0)
+                available_qty = max(0, qty - held)
+            result.append({
                 "ticker": p.symbol,
-                "qty": int(p.qty),
+                "qty": qty,
+                "available_qty": available_qty,
                 "avg_entry": float(p.avg_entry_price),
                 "current_price": float(p.current_price),
                 "unrealized_pl": float(p.unrealized_pl),
                 "unrealized_plpc": float(p.unrealized_plpc),
                 "market_value": float(p.market_value),
-            }
-            for p in positions
-        ]
+            })
+        return result
     return _retry(_)
 
 
@@ -201,4 +228,25 @@ def sell(symbol, qty):
         )
         order = _trading_client().submit_order(req)
         return {"status": "submitted", "order_id": str(order.id), "symbol": order.symbol, "qty": int(order.qty), "side": "sell"}
+    return _retry(_)
+
+
+def get_portfolio_history(period="1M", timeframe="1D"):
+    """
+    Return portfolio history (equity curve) from Alpaca.
+    period: e.g. "1D", "1W", "1M", "3M", "1A" (1 year)
+    timeframe: "1Min", "5Min", "15Min", "1H", "1D"
+    Returns dict with timestamp[], equity[], profit_loss[], profit_loss_pct[], base_value, timeframe.
+    """
+    def _():
+        req = GetPortfolioHistoryRequest(period=period, timeframe=timeframe)
+        hist = _trading_client().get_portfolio_history(history_filter=req)
+        return {
+            "timestamp": list(hist.timestamp) if hist.timestamp else [],
+            "equity": [float(e) for e in hist.equity] if hist.equity else [],
+            "profit_loss": [float(p) for p in hist.profit_loss] if hist.profit_loss else [],
+            "profit_loss_pct": [float(p) for p in hist.profit_loss_pct] if hist.profit_loss_pct else [],
+            "base_value": float(hist.base_value) if hist.base_value else 0,
+            "timeframe": hist.timeframe or timeframe,
+        }
     return _retry(_)

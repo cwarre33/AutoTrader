@@ -11,10 +11,12 @@ logger = logging.getLogger("autotrader.discord")
 TRADES_CHANNEL_ID = os.environ.get("DISCORD_TRADES_CHANNEL_ID", "1474503672951079024")
 CYCLES_CHANNEL_ID = os.environ.get("DISCORD_CYCLES_CHANNEL_ID", "1474503699903680756")
 DASHBOARD_CHANNEL_ID = os.environ.get("DISCORD_DASHBOARD_CHANNEL_ID", "1474505225866969098")
+CHARTS_CHANNEL_ID = os.environ.get("DISCORD_CHARTS_CHANNEL_ID", "1474502611393581267")
 DASHBOARD_WEBHOOK_URL = os.environ.get("DISCORD_DASHBOARD_WEBHOOK_URL", "")
 TRADES_WEBHOOK_URL = os.environ.get("DISCORD_TRADES_WEBHOOK_URL", "")
 BASE = "https://discord.com/api/v10"
 DASHBOARD_STATE_FILE = Path(__file__).resolve().parent.parent / "config" / "dashboard_message_id.json"
+CHART_STATE_FILE = Path(__file__).resolve().parent.parent / "config" / "chart_message_id.json"
 
 # Load .env if token missing (cron subprocess may not inherit env)
 def _ensure_env():
@@ -126,6 +128,97 @@ def post_trades(trades_text: str) -> bool:
 def post_cycles(cycles_text: str) -> bool:
     """Post cycle summary to the cycles channel."""
     return _post(CYCLES_CHANNEL_ID, cycles_text)
+
+
+def _delete_message(channel_id: str, message_id: str) -> bool:
+    """Delete a message. Returns True on success."""
+    headers = _headers()
+    if not headers:
+        return False
+    url = f"{BASE}/channels/{channel_id}/messages/{message_id}"
+    req = urllib.request.Request(url, headers=headers, method="DELETE")
+    try:
+        with urllib.request.urlopen(req, timeout=10):
+            return True
+    except Exception:
+        return False
+
+
+def _post_image_and_get_id(channel_id: str, image_bytes: bytes, filename: str = "chart.png", content: str = ""):
+    """Post an image and return its message ID, or None on failure."""
+    _ensure_env()
+    headers = _headers()
+    if not headers:
+        return None
+    headers = {k: v for k, v in headers.items() if k.lower() != "content-type"}
+
+    boundary = b"----WebKitFormBoundary" + os.urandom(16).hex().encode()
+    crlf = b"\r\n"
+    body = b""
+    payload = {"content": content[:2000]} if content else {}
+    body += b"--" + boundary + crlf
+    body += b'Content-Disposition: form-data; name="payload_json"' + crlf
+    body += b"Content-Type: application/json" + crlf + crlf
+    body += json.dumps(payload).encode() + crlf
+    body += b"--" + boundary + crlf
+    body += f'Content-Disposition: form-data; name="files[0]"; filename="{filename}"'.encode() + crlf
+    body += b"Content-Type: image/png" + crlf + crlf
+    body += image_bytes + crlf
+    body += b"--" + boundary + b"--" + crlf
+
+    headers["Content-Type"] = f"multipart/form-data; boundary={boundary.decode()}"
+    headers["Content-Length"] = str(len(body))
+
+    url = f"{BASE}/channels/{channel_id}/messages"
+    req = urllib.request.Request(url, data=body, headers=headers, method="POST")
+    try:
+        with urllib.request.urlopen(req, timeout=15) as r:
+            out = json.loads(r.read().decode())
+            return out.get("id")
+    except Exception:
+        return None
+
+
+def post_image(channel_id: str, image_bytes: bytes, filename: str = "chart.png", content: str = "") -> bool:
+    """Post an image to a Discord channel. Uses multipart/form-data."""
+    return _post_image_and_get_id(channel_id, image_bytes, filename, content) is not None
+
+
+def update_chart(image_bytes: bytes, content: str = "📈 Portfolio equity") -> bool:
+    """
+    Update the chart in the charts channel. Same logic as dashboard: delete old message,
+    post new one, save ID. (Discord cannot edit image attachments.)
+    """
+    _ensure_env()
+    channel_id = os.environ.get("DISCORD_CHARTS_CHANNEL_ID", CHARTS_CHANNEL_ID) or CHARTS_CHANNEL_ID
+    headers = _headers()
+    if not headers:
+        return False
+
+    msg_id = None
+    if CHART_STATE_FILE.exists():
+        try:
+            state = json.loads(CHART_STATE_FILE.read_text())
+            if state.get("channel_id") == channel_id:
+                msg_id = state.get("message_id")
+        except Exception:
+            pass
+    if msg_id:
+        _delete_message(channel_id, str(msg_id))
+        try:
+            CHART_STATE_FILE.unlink()
+        except Exception:
+            pass
+
+    new_id = _post_image_and_get_id(channel_id, image_bytes, "equity.png", content)
+    if new_id:
+        CHART_STATE_FILE.parent.mkdir(parents=True, exist_ok=True)
+        CHART_STATE_FILE.write_text(json.dumps({
+            "channel_id": channel_id,
+            "message_id": str(new_id),
+        }, indent=2))
+        return True
+    return False
 
 
 # Discord/Cloudflare blocks Python's default urllib User-Agent (Python-urllib/x.x)

@@ -12,6 +12,8 @@ pinned: false
 
 AI-powered paper trading bot that scans high-volume stocks, analyzes them with RSI and news sentiment via LLM reasoning, and executes paper trades on Alpaca.
 
+**→ [STRUCTURE.md](STRUCTURE.md)** — Project layout and navigation
+
 ## Features
 
 - **Stock Scanner**: Identifies top 50 most active stocks by volume

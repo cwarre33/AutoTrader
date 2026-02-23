@@ -8,6 +8,33 @@
 | Trades | `1474503672951079024` | Trade executions only (buy/sell) |
 | Cycles | `1474503699903680756` | Scan cycle summaries (every run) |
 | Dashboard | `1474505225866969098` | Single message, updated each cycle with equity, positions, P&L |
+| Charts | (optional) | Portfolio equity curve chart — use `DISCORD_CHARTS_CHANNEL_ID` or defaults to primary |
+
+## Channel Bleeding Fix (message merging)
+
+If cycle summaries, agent chat, or malformed JSON appear in the **trades** channel:
+
+1. **Cron routing**: In `openclaw-config/cron/jobs.json`, set `delivery.to` for the scan job to `channel:1474503699903680756` (cycles), **not** trades. The scan prints cycle summaries to stdout; cron delivers that output. It must go to cycles.
+
+2. **Agent channel**: Ensure the agent/gateway listens to **primary** (`1474502611393581267`), not trades. Human @mentions and agent replies belong in primary.
+
+3. **Malformed messages**: Run `python scripts/cleanup_discord_malformed.py --dry-run` to list, then without `--dry-run` to delete raw JSON/agent output bugs.
+
+4. **Analysis**: Run `python scripts/analyze_discord_channels.py` to check for message bleeding across channels.
+
+## Portfolio Chart (equity curve visual)
+
+To post an equity curve chart from Alpaca to Discord:
+
+```bash
+python scripts/post_portfolio_chart.py
+```
+
+- **Channel**: Uses `DISCORD_CHARTS_CHANNEL_ID` (default: dashboard channel)
+- **Period**: `CHART_PERIOD` env (default: `1M` for 1 month)
+- **Timeframe**: `CHART_TIMEFRAME` env (default: `1D` for daily)
+
+Add to cron for periodic charts, or run manually. Requires `matplotlib` (in Docker image).
 
 ## Dashboard Setup (static, one message)
 

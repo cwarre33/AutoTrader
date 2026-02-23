@@ -20,6 +20,8 @@ You have access to the Alpaca paper trading API via a Python CLI wrapper. All co
 
 All commands run via: `python tools/alpaca_tool.py <command> [args]`
 
+**Order utilities** (scripts/): `cancel_order.py`, `check_order.py` — list/cancel orders, check status.
+
 Environment variables `ALPACA_API_KEY`, `ALPACA_SECRET_KEY`, and `ALPACA_PAPER_TRADE` are pre-configured.
 
 ## Commands

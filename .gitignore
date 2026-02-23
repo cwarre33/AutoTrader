@@ -5,6 +5,11 @@ logs/
 node_modules/
 openclaw-config/
 workspace/logs/
+workspace/tmp/*.json
+workspace/tmp/discord_analysis/
+workspace/bars.json
+workspace/tmp_bars.json
+workspace/cron_output.txt
 .venv/
 .claude/
 nul

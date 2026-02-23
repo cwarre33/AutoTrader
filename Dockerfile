@@ -9,7 +9,7 @@ RUN apt-get update && \
 
 # Install alpaca-py into a venv accessible by the node user
 RUN python3 -m venv /opt/alpaca-venv && \
-    /opt/alpaca-venv/bin/pip install --no-cache-dir "alpaca-py>=0.30.0" pytz && \
+    /opt/alpaca-venv/bin/pip install --no-cache-dir "alpaca-py>=0.30.0" pytz matplotlib && \
     chown -R node:node /opt/alpaca-venv
 
 # Make the venv's python the default python
