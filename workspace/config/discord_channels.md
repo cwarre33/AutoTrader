@@ -22,6 +22,8 @@ If cycle summaries, agent chat, or malformed JSON appear in the **trades** chann
 
 4. **Analysis**: Run `python scripts/analyze_discord_channels.py` to check for message bleeding across channels.
 
+5. **"channels unresolved" in gateway logs**: The bot cannot resolve channel IDs to names. Ensure the bot has **View Channel**, **Read Message History**, **Send Messages** in all channels. Re-invite the bot with correct permissions if needed.
+
 ## Portfolio Chart (equity curve visual)
 
 To post an equity curve chart from Alpaca to Discord:
