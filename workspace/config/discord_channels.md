@@ -22,7 +22,68 @@ If cycle summaries, agent chat, or malformed JSON appear in the **trades** chann
 
 4. **Analysis**: Run `python scripts/analyze_discord_channels.py` to check for message bleeding across channels.
 
-5. **"channels unresolved" in gateway logs**: The bot cannot resolve channel IDs to names. Ensure the bot has **View Channel**, **Read Message History**, **Send Messages** in all channels. Re-invite the bot with correct permissions if needed.
+5. **"channels unresolved" in gateway logs**: See [Troubleshooting: channels unresolved](#troubleshooting-channels-unresolved) below.
+
+## Troubleshooting: channels unresolved
+
+If you see `[discord] channels unresolved: <guild_id>/<channel_id>` in gateway logs, the bot cannot resolve channel IDs to usable channel objects. That causes `Action send requires a target` when cron or the agent tries to post — the message tool has no valid target.
+
+**Root cause:** Either (1) the bot lacks permissions, or (2) a known OpenClaw bug: numeric channel IDs in `guilds.<guildId>.channels` cause channels to never resolve (see [openclaw/openclaw#15532](https://github.com/openclaw/openclaw/issues/15532)).
+
+**If you've already fixed permissions** and still see `channels unresolved`, use the wildcard workaround in `openclaw-config/openclaw.json`:
+
+```json
+"channels": {
+  "*": { "allow": true, "requireMention": false }
+}
+```
+
+This bypasses the numeric ID parsing bug. Restart the gateway after the change.
+
+**If permissions are the issue:** The bot lacks permissions to view or interact with the configured channels. OpenClaw config is correct; the fix is Discord-side.
+
+### Re-invite the bot with correct permissions
+
+The bot must have these permissions in **every** channel it uses:
+
+- **View Channel** — required to see the channel
+- **Read Message History** — required to resolve channel metadata
+- **Send Messages** — required to post
+- **Embed Links** — required for rich messages (dashboard, charts)
+
+**Steps:**
+
+1. Go to [Discord Developer Portal](https://discord.com/developers/applications) → your AutoTrader application.
+2. Open **OAuth2** → **URL Generator**.
+3. Select scopes: `bot`.
+4. Select bot permissions: View Channels, Read Message History, Send Messages, Embed Links. Optional: Attach Files (charts), Manage Messages (cleanup script).
+5. Copy the generated URL and open it in a browser.
+6. Select your server and authorize. This **re-invites** the bot with the new permission set.
+
+### Verify channel-level permissions
+
+If the bot is already in the server but some channels are restricted:
+
+1. Right-click each channel (Primary, Trades, Cycles, Dashboard) → **Edit Channel** → **Permissions**.
+2. Add or edit the bot role: View Channel, Read Message History, Send Messages, Embed Links.
+3. Ensure no **Deny** overrides block these permissions.
+
+### After fixing
+
+```bash
+docker compose restart openclaw-gateway
+```
+
+Wait ~30 seconds. `channels unresolved` should disappear from logs. See [DISCORD.md](../../DISCORD.md) section 5 for more details.
+
+### Optional: Webhooks fallback
+
+If the bot API continues to fail (e.g. 403/1010 in Docker), use webhooks:
+
+- **Dashboard**: Set `DISCORD_DASHBOARD_WEBHOOK_URL` in `.env`
+- **Trades**: Set `DISCORD_TRADES_WEBHOOK_URL` in `.env`
+
+Webhooks bypass the bot API. See [Dashboard Setup](#dashboard-setup-static-one-message) above.
 
 ## Portfolio Chart (equity curve visual)
 
