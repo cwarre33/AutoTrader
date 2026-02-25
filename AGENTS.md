@@ -44,12 +44,15 @@ The `.env` file must be created from `.env.example` with actual values before st
 
 From host: `docker exec autotrader-gateway python /home/node/.openclaw/workspace/scan_autotrader.py`
 
+The scanner uses the v2 strategy with exposure caps, trailing stops, and multi-signal entry filters.
+Key parameters are defined at the top of `workspace/scan_autotrader.py` for easy tuning.
+
 ### Lint
 
 ```bash
 flake8 --max-line-length=200 --exclude=__pycache__ dashboard.py workspace/scan_autotrader.py workspace/lib/ workspace/tools/alpaca_tool.py
 ```
-Note: pre-existing style issues exist (tabs in `alpaca_tool.py`, minor warnings in other files).
+Note: pre-existing style issues exist (tabs in `alpaca_tool.py`, E402 in `scan_autotrader.py` due to `sys.path` manipulation).
 
 ### Testing
 
@@ -57,6 +60,10 @@ No automated test suite exists. Verify by:
 1. `curl http://localhost:5050/api/health` - should return `{"alpaca": "ok", ...}`
 2. `curl http://localhost:5050/api/account` - should return account JSON
 3. Run a scan: `docker exec autotrader-gateway python /home/node/.openclaw/workspace/scan_autotrader.py`
+
+### Alpaca key rotation caveat
+
+If Alpaca API keys are regenerated, the `.env` file must be regenerated and the gateway restarted (`docker compose down && docker compose up -d openclaw-gateway`). The `alpaca_client.py` module caches clients at module level, so a container restart is required for key changes to take effect.
 
 ### Docker in Cloud VM
 
