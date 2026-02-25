@@ -256,7 +256,7 @@ def main():
     # === PHASE 1: Stop-loss, trailing stop, and profit-taking ===
     for pos in positions:
         ticker = pos["ticker"]
-        qty = int(pos["qty"])
+        qty = float(pos["qty"])
         available_qty = pos.get("available_qty", qty)
         plpc = float(pos.get("unrealized_plpc", 0) or 0)
         cur_price = float(pos.get("current_price", 0))
@@ -330,8 +330,8 @@ def main():
         if plpc >= PROFIT_TAKE_HALF_PCT:
             if not _check_pdt(ticker, "sell", today, todays_decisions, pdt_active):
                 continue
-            sell_qty = min(qty // 2, available_qty)
-            if sell_qty > 0:
+            sell_qty = min(qty / 2, available_qty)
+            if sell_qty > 0.0001:
                 sell(ticker, sell_qty)
                 sell_candidates.append((ticker, sell_qty, 0, "profit-take-half"))
                 log_decision({"timestamp": now, "action": "sell", "ticker": ticker,
@@ -351,7 +351,7 @@ def main():
     for pos in positions:
         ticker = pos["ticker"]
         mv = float(pos.get("market_value", 0))
-        qty = int(pos["qty"])
+        qty = float(pos["qty"])
         available_qty = pos.get("available_qty", qty)
         if mv < dust_threshold and available_qty > 0 and qty > 0:
             plpc = float(pos.get("unrealized_plpc", 0) or 0)
@@ -395,7 +395,7 @@ def main():
                 pos = next((p for p in positions if p["ticker"] == ticker), None)
                 if not pos:
                     continue
-                qty = int(pos["qty"])
+                qty = float(pos["qty"])
                 available_qty = pos.get("available_qty", qty)
                 if available_qty <= 0:
                     logger.warning("Skipping RSI sell %s: %d shares held by open orders",
@@ -407,9 +407,9 @@ def main():
                     sell_qty = min(qty, available_qty)
                     reason = f"RSI sell-all ({rsi:.1f})"
                 elif rsi > RSI_SELL_HALF:
-                    sell_qty = min(qty // 2, available_qty)
+                    sell_qty = min(qty / 2, available_qty)
                     reason = f"RSI sell-half ({rsi:.1f})"
-                if sell_qty > 0:
+                if sell_qty > 0.0001:
                     if not _check_pdt(ticker, "sell", today, todays_decisions,
                                       pdt_active):
                         continue
