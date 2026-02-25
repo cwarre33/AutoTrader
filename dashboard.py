@@ -267,7 +267,22 @@ def api_sim():
 
     positions = sim_data.get("positions", {})
     if not positions:
-        return jsonify(sim_data)
+        starting = sim_data.get("starting_balance", 0)
+        cash = sim_data.get("cash", 0)
+        return jsonify({
+            "starting_balance": starting,
+            "equity": cash,
+            "cash": cash,
+            "market_value": 0,
+            "unrealized_pl": 0,
+            "realized_pl": sim_data.get("realized_pl", 0),
+            "total_pl": round(cash - starting, 2),
+            "total_pl_pct": round((cash - starting) / starting * 100, 2) if starting > 0 else 0,
+            "positions": [],
+            "position_count": 0,
+            "exposure_pct": 0,
+            "trades": sim_data.get("trades", [])[-20:],
+        })
 
     try:
         result = subprocess.run(
