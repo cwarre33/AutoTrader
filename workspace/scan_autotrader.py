@@ -78,6 +78,8 @@ DAILY_DRAWDOWN_HALT = -0.02    # Halt buys if down >2% intraday (was -3%)
 
 _COOLDOWN_FILE = LOGS_DIR / "cooldown.json"
 _PEAK_FILE = LOGS_DIR / "trailing_peaks.json"
+_CHART_TS_FILE = LOGS_DIR / "last_chart_post.txt"
+CHART_INTERVAL_SEC = 1800     # Post chart at most once per 30 minutes
 
 
 def _load_cooldown(today: str) -> set:
@@ -115,6 +117,31 @@ def _save_peaks(peaks: dict):
 
 def _total_market_value(positions):
     return sum(float(p.get("market_value", 0)) for p in positions)
+
+
+def _post_chart_throttled(now_iso):
+    """Post equity chart to Discord, but at most once per CHART_INTERVAL_SEC."""
+    import time as _time
+    now_ts = _time.time()
+    if _CHART_TS_FILE.exists():
+        try:
+            last_ts = float(_CHART_TS_FILE.read_text().strip())
+            if now_ts - last_ts < CHART_INTERVAL_SEC:
+                logger.debug("Chart post throttled (last %.0fs ago)",
+                             now_ts - last_ts)
+                return
+        except (ValueError, OSError):
+            pass
+    try:
+        from lib.chart import equity_chart_png
+        hist = get_portfolio_history(period="1M", timeframe="1D")
+        if hist.get("equity"):
+            png = equity_chart_png(hist)
+            if png and update_chart(png, content="📈 Portfolio — 1M"):
+                LOGS_DIR.mkdir(parents=True, exist_ok=True)
+                _CHART_TS_FILE.write_text(str(now_ts))
+    except Exception as e:
+        logger.warning("Chart error: %s", e)
 
 
 def main():
@@ -372,7 +399,7 @@ def main():
                 log_outcome({"timestamp": now, "ticker": ticker, "action": "buy",
                              "reason": f"RSI {rsi:.1f}", "shares": shares, "price": price})
 
-    # === Summary (notification-friendly) ===
+    # === Summary & Discord output ===
     final_account = get_account()
     final_positions = get_positions()
     final_equity = float(final_account.get("equity", 0)) if final_account else equity
@@ -385,42 +412,56 @@ def main():
               else f"${final_equity / 1_000:.1f}K")
     pl_sign = "+" if daily_pl >= 0 else ""
     pl_pct = (daily_pl / final_equity * 100) if final_equity > 0 else 0
+    from_start = final_equity - 100_000
+    from_sign = "+" if from_start >= 0 else ""
+    status_line = (f"📊 {eq_str} ({from_sign}${from_start:,.0f})"
+                   f" · {pl_sign}${daily_pl:,.0f} today"
+                   f" · {n_pos} pos · {exposure_pct:.0f}%")
 
-    sold_str = ("Sold: " + ", ".join(f"{t} {q}" for t, q, _, _ in sell_candidates)
-                if sell_candidates else "")
-    bought_str = ("Bought: " + ", ".join(f"{t} {q}" for t, q, _, _ in buy_candidates)
-                  if buy_candidates else "")
-    action_str = (" · ".join(filter(None, [sold_str, bought_str]))
-                  if (sell_candidates or buy_candidates) else "No trades this cycle.")
-
-    if sell_candidates or buy_candidates:
-        trades_lines = []
-        for t, q, r, reason in sell_candidates:
-            trades_lines.append(f"🔴 SELL {t} {q} shares — {reason}")
-        for t, q, r, reason in buy_candidates:
-            trades_lines.append(f"🟢 BUY {t} {q} shares — {reason}")
-        if post_trades("\n".join(trades_lines)):
-            logger.info("Posted %d trades to Discord",
-                        len(sell_candidates) + len(buy_candidates))
-        else:
-            logger.warning("Failed to post trades to Discord")
-
-    lines = [
-        f"📊 {eq_str} · {pl_sign}${daily_pl:,.0f} ({pl_sign}{pl_pct:.2f}%)"
-        f" · {n_pos} positions · {exposure_pct:.0f}% deployed",
-        action_str,
-    ]
     held = {p["ticker"] for p in final_positions}
     watches = sorted([(t, r) for t, r in all_rsi.items() if t not in held and r < 35],
                      key=lambda x: x[1])[:3]
-    lines.append("Watching: " + ", ".join(f"{t} RSI {r:.0f}" for t, r in watches)
-                 if watches else "No oversold signals. Holding.")
-    if buys_halted:
-        lines.append(f"CIRCUIT BREAKER: down {day_drawdown * 100:.1f}% today — buys halted")
-    if cooldown_tickers:
-        lines.append(f"Cooldown: {', '.join(sorted(cooldown_tickers))}")
-    print("\n".join(lines))
 
+    had_trades = bool(sell_candidates or buy_candidates)
+
+    # ── #trades channel: only when trades happened, with context ──
+    if had_trades:
+        trades_lines = []
+        for t, q, r, reason in sell_candidates:
+            pos = next((p for p in positions if p["ticker"] == t), None)
+            plpc_str = ""
+            if pos:
+                plpc_str = f" ({float(pos.get('unrealized_plpc', 0)) * 100:+.1f}%)"
+            trades_lines.append(f"🔴 SELL {t} ×{q}{plpc_str} — {reason}")
+        for t, q, r, reason in buy_candidates:
+            trades_lines.append(f"🟢 BUY {t} ×{q} — {reason}")
+        trades_lines.append(f"─\n{status_line}")
+        post_trades("\n".join(trades_lines))
+
+    # ── #cycles (stdout → OpenClaw): clean, no log lines ──
+    # Only print when trades happened or something notable occurred
+    if had_trades or buys_halted:
+        cycle_lines = [status_line]
+        if sell_candidates:
+            sold_parts = []
+            for t, q, _, reason in sell_candidates:
+                short = reason.split("(")[0].strip().replace("profit-take-", "TP-")
+                sold_parts.append(f"{t} ×{q} ({short})")
+            cycle_lines.append("Sold: " + ", ".join(sold_parts))
+        if buy_candidates:
+            bought_parts = [f"{t} ×{q}" for t, q, _, _ in buy_candidates]
+            cycle_lines.append("Bought: " + ", ".join(bought_parts))
+        if buys_halted:
+            cycle_lines.append(
+                f"⚠ CIRCUIT BREAKER: down {day_drawdown * 100:.1f}% today")
+        if watches:
+            cycle_lines.append(
+                "👀 " + ", ".join(f"{t} RSI {r:.0f}" for t, r in watches))
+        print("\n".join(cycle_lines))
+    else:
+        logger.debug("No trades, skipping cycles post")
+
+    # ── Self-improvement logging (always) ──
     decisions_today = [d for d in load_recent_decisions(limit=500)
                        if d.get("timestamp", "")[:10] == today]
     append_daily_review({
@@ -434,47 +475,45 @@ def main():
         "exposure_pct": round(exposure_pct, 1),
     })
     rotate_decisions_log()
-    logger.debug("Scan complete: equity=%s positions=%s trades=%s exposure=%.0f%%",
-                 eq_str, n_pos, len(sell_candidates) + len(buy_candidates), exposure_pct)
 
-    # Update Discord dashboard
-    dashboard_lines = [
-        "**📊 AutoTrader Dashboard (v2)**",
-        f"Equity: {eq_str} · P&L: {pl_sign}${daily_pl:,.0f} ({pl_sign}{pl_pct:.2f}%)",
-        f"Positions: {n_pos} · Exposure: {exposure_pct:.0f}%",
-        "",
-        "**Holdings:**",
+    # ── #dashboard: compact overview with risk alerts ──
+    near_stop = [p for p in final_positions
+                 if float(p.get("unrealized_plpc", 0) or 0) < -0.02]
+    top_winners = sorted(final_positions,
+                         key=lambda x: -float(x.get("unrealized_plpc", 0) or 0))[:5]
+    dash = [
+        f"**📊 AutoTrader** — {eq_str} ({from_sign}${from_start:,.0f} all-time)",
+        f"P&L today: {pl_sign}${daily_pl:,.0f} ({pl_sign}{pl_pct:.1f}%)"
+        f" · {n_pos} positions · {exposure_pct:.0f}% exposure",
     ]
-    for p in sorted(final_positions, key=lambda x: -float(x.get("market_value", 0))):
-        mv = float(p.get("market_value", 0))
-        plpc = float(p.get("unrealized_plpc", 0) or 0)
-        sign = "+" if plpc >= 0 else ""
-        dashboard_lines.append(f"• {p['ticker']}: ${mv:,.0f} ({sign}{plpc * 100:.1f}%)")
+    if near_stop:
+        alerts = []
+        for p in sorted(near_stop, key=lambda x: float(x.get("unrealized_plpc", 0))):
+            plpc = float(p.get("unrealized_plpc", 0)) * 100
+            alerts.append(f"{p['ticker']} {plpc:.1f}%")
+        dash.append(f"⚠ **Near stop-loss:** {', '.join(alerts)}")
+    if top_winners:
+        dash.append("")
+        dash.append("**Top movers:**")
+        for p in top_winners:
+            mv = float(p.get("market_value", 0))
+            plpc = float(p.get("unrealized_plpc", 0) or 0) * 100
+            sign = "+" if plpc >= 0 else ""
+            mv_str = f"${mv / 1000:.1f}K" if mv >= 1000 else f"${mv:.0f}"
+            dash.append(f"• {p['ticker']} {mv_str} ({sign}{plpc:.1f}%)")
     if watches:
-        dashboard_lines.append("")
         watch_str = ", ".join(f"{t} RSI {r:.0f}" for t, r in watches)
-        dashboard_lines.append(f"**Watching (RSI<35):** {watch_str}")
-    dashboard_lines.append("")
-    dashboard_lines.append(f"_Updated {now[:19].replace('T', ' ')} UTC_")
+        dash.append(f"\n👀 **Watching:** {watch_str}")
+    if cooldown_tickers:
+        dash.append(f"🚫 Cooldown: {', '.join(sorted(cooldown_tickers))}")
+    dash.append(f"\n_Updated {now[11:16]} UTC_")
     try:
-        if update_dashboard("\n".join(dashboard_lines)):
-            logger.info("Updated Discord dashboard")
-        else:
-            logger.warning("Failed to update Discord dashboard")
+        update_dashboard("\n".join(dash))
     except Exception as e:
         logger.warning("Dashboard update error: %s", e)
 
-    try:
-        from lib.chart import equity_chart_png
-        hist = get_portfolio_history(period="1M", timeframe="1D")
-        if hist.get("equity"):
-            png = equity_chart_png(hist)
-            if png and update_chart(png, content="📈 Portfolio equity — last 1M"):
-                logger.info("Updated Discord chart")
-            elif png:
-                logger.warning("Failed to update Discord chart")
-    except Exception as e:
-        logger.warning("Chart update error: %s", e)
+    # ── #charts: throttled to once per 30 min ──
+    _post_chart_throttled(now)
 
 
 if __name__ == "__main__":
