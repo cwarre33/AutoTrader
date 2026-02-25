@@ -19,7 +19,28 @@ import sys
 from datetime import datetime
 
 import os
+from pathlib import Path
+
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+
+# Load .env if key vars not set (cron subprocess may not inherit full Docker env)
+if not os.environ.get("SIMULATED_BALANCE") or not os.environ.get("GATEWAY_MODE"):
+    for _p in [
+        Path(__file__).resolve().parent / ".env",
+        Path(__file__).resolve().parent.parent / ".env",
+    ]:
+        if _p.exists():
+            try:
+                for _line in _p.read_text().splitlines():
+                    _line = _line.strip()
+                    if _line and not _line.startswith("#") and "=" in _line:
+                        _k, _, _v = _line.partition("=")
+                        _k = _k.strip()
+                        if _k and _k not in os.environ:
+                            os.environ[_k] = _v.strip().strip('"').strip("'")
+            except (OSError, UnicodeDecodeError):
+                pass
+            break
 
 from lib.config import validate_env, load_watchlist
 from lib.alpaca_client import get_account, get_positions, get_bars, buy_notional, sell, get_portfolio_history
@@ -521,17 +542,22 @@ def main():
     final_account = get_account()
     final_positions = get_positions()
     final_equity = float(final_account.get("equity", 0)) if final_account else equity
+    actual_equity = final_equity
     daily_pl = sum(float(p.get("unrealized_pl", 0) or 0) for p in final_positions)
     n_pos = len(final_positions)
     exposure = _total_market_value(final_positions)
-    exposure_pct = (exposure / final_equity * 100) if final_equity > 0 else 0
+    # When simulated, use cap for display; otherwise actual equity
+    display_equity = equity if SIMULATED_BALANCE > 0 else final_equity
+    exposure_pct = (exposure / display_equity * 100) if display_equity > 0 else 0
 
-    eq_str = (f"${final_equity / 1_000_000:.1f}M" if final_equity >= 1_000_000
-              else f"${final_equity / 1_000:.1f}K")
+    eq_str = (f"${display_equity / 1_000_000:.1f}M" if display_equity >= 1_000_000
+              else f"${display_equity / 1_000:.1f}K" if display_equity >= 1_000
+              else f"${display_equity:,.0f}")
     pl_sign = "+" if daily_pl >= 0 else ""
-    pl_pct = (daily_pl / final_equity * 100) if final_equity > 0 else 0
+    pl_pct = (daily_pl / display_equity * 100) if display_equity > 0 else 0
     start_val = SIMULATED_BALANCE if SIMULATED_BALANCE > 0 else 100_000
-    from_start = final_equity - start_val
+    # When sim: show actual above cap; else normal all-time change
+    from_start = (actual_equity - SIMULATED_BALANCE) if SIMULATED_BALANCE > 0 else (final_equity - start_val)
     from_sign = "+" if from_start >= 0 else ""
     status_line = (f"📊 {eq_str} ({from_sign}${from_start:,.0f})"
                    f" · {pl_sign}${daily_pl:,.0f} today"
@@ -597,11 +623,18 @@ def main():
                  if float(p.get("unrealized_plpc", 0) or 0) < -0.02]
     top_winners = sorted(final_positions,
                          key=lambda x: -float(x.get("unrealized_plpc", 0) or 0))[:5]
-    dash = [
-        f"**📊 AutoTrader** — {eq_str} ({from_sign}${from_start:,.0f} all-time)",
-        f"P&L today: {pl_sign}${daily_pl:,.0f} ({pl_sign}{pl_pct:.1f}%)"
-        f" · {n_pos} positions · {exposure_pct:.0f}% exposure",
-    ]
+    if SIMULATED_BALANCE > 0:
+        dash = [
+            f"**📊 AutoTrader** — {eq_str} sim cap (actual ${actual_equity:,.0f})",
+            f"P&L today: {pl_sign}${daily_pl:,.0f} ({pl_sign}{pl_pct:.1f}%)"
+            f" · {n_pos} positions · {exposure_pct:.0f}% exposure",
+        ]
+    else:
+        dash = [
+            f"**📊 AutoTrader** — {eq_str} ({from_sign}${from_start:,.0f} all-time)",
+            f"P&L today: {pl_sign}${daily_pl:,.0f} ({pl_sign}{pl_pct:.1f}%)"
+            f" · {n_pos} positions · {exposure_pct:.0f}% exposure",
+        ]
     if near_stop:
         alerts = []
         for p in sorted(near_stop, key=lambda x: float(x.get("unrealized_plpc", 0))):

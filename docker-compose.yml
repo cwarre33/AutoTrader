@@ -21,6 +21,8 @@ services:
       ALPACA_SECRET_KEY: ${ALPACA_SECRET_KEY}
       ALPACA_PAPER_TRADE: "True"
       OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      SIMULATED_BALANCE: ${SIMULATED_BALANCE:-0}
+      GATEWAY_MODE: ${GATEWAY_MODE:-paper}
     volumes:
       - ./openclaw-config:/home/node/.openclaw
       - ./workspace:/home/node/.openclaw/workspace
