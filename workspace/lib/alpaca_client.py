@@ -204,7 +204,7 @@ def get_snapshots_batch(tickers):
 
 
 def buy(symbol, qty):
-    """Place market buy. Return order info dict."""
+    """Place market buy by share quantity. Return order info dict."""
     def _():
         req = MarketOrderRequest(
             symbol=symbol.upper(),
@@ -213,7 +213,24 @@ def buy(symbol, qty):
             time_in_force=TimeInForce.DAY,
         )
         order = _trading_client().submit_order(req)
-        return {"status": "submitted", "order_id": str(order.id), "symbol": order.symbol, "qty": int(order.qty), "side": "buy"}
+        return {"status": "submitted", "order_id": str(order.id),
+                "symbol": order.symbol, "qty": float(order.qty), "side": "buy"}
+    return _retry(_)
+
+
+def buy_notional(symbol, dollar_amount):
+    """Place market buy by dollar amount (fractional shares). Return order info dict."""
+    def _():
+        req = MarketOrderRequest(
+            symbol=symbol.upper(),
+            notional=round(dollar_amount, 2),
+            side=OrderSide.BUY,
+            time_in_force=TimeInForce.DAY,
+        )
+        order = _trading_client().submit_order(req)
+        return {"status": "submitted", "order_id": str(order.id),
+                "symbol": order.symbol, "notional": round(dollar_amount, 2),
+                "side": "buy"}
     return _retry(_)
 
 
@@ -227,7 +244,8 @@ def sell(symbol, qty):
             time_in_force=TimeInForce.DAY,
         )
         order = _trading_client().submit_order(req)
-        return {"status": "submitted", "order_id": str(order.id), "symbol": order.symbol, "qty": int(order.qty), "side": "sell"}
+        return {"status": "submitted", "order_id": str(order.id),
+                "symbol": order.symbol, "qty": float(order.qty), "side": "sell"}
     return _retry(_)
 
 
