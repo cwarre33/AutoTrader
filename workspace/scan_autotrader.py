@@ -29,9 +29,14 @@ from lib.config import LOGS_DIR
 try:
     from lib.discord_post import post_trades, update_dashboard, update_chart
 except ImportError:
-    def post_trades(_): return False
-    def update_dashboard(_): return False
-    def update_chart(*a, **k): return False
+    def post_trades(_):
+        return False
+
+    def update_dashboard(_):
+        return False
+
+    def update_chart(*a, **k):
+        return False
 
 logging.basicConfig(
     level=logging.INFO,
@@ -140,8 +145,9 @@ def main():
                     if day_open_equity > 0 else 0)
     buys_halted = day_drawdown <= DAILY_DRAWDOWN_HALT
     if buys_halted:
-        logger.warning("Circuit breaker: portfolio down %.2f%% today — no new buys",
-                        day_drawdown * 100)
+        logger.warning(
+            "Circuit breaker: portfolio down %.2f%% today — no new buys",
+            day_drawdown * 100)
 
     buy_candidates = []
     sell_candidates = []
@@ -174,7 +180,7 @@ def main():
             sell_candidates.append((ticker, sell_qty, 0, "stop-loss"))
             log_decision({"timestamp": now, "action": "sell", "ticker": ticker,
                           "shares": sell_qty,
-                          "reason": f"stop-loss {STOP_LOSS_PCT*100:.0f}%",
+                          "reason": f"stop-loss {STOP_LOSS_PCT * 100:.0f}%",
                           "plpc": plpc, "price": cur_price,
                           "portfolio_value": equity})
             log_outcome({"timestamp": now, "ticker": ticker, "action": "sell",
@@ -211,7 +217,7 @@ def main():
             sell_candidates.append((ticker, sell_qty, 0, "profit-take-full"))
             log_decision({"timestamp": now, "action": "sell", "ticker": ticker,
                           "shares": sell_qty,
-                          "reason": f"profit-take +{PROFIT_TAKE_FULL_PCT*100:.0f}%",
+                          "reason": f"profit-take +{PROFIT_TAKE_FULL_PCT * 100:.0f}%",
                           "plpc": plpc, "price": cur_price,
                           "portfolio_value": equity})
             log_outcome({"timestamp": now, "ticker": ticker, "action": "sell",
@@ -227,7 +233,7 @@ def main():
                 sell_candidates.append((ticker, sell_qty, 0, "profit-take-half"))
                 log_decision({"timestamp": now, "action": "sell", "ticker": ticker,
                               "shares": sell_qty,
-                              "reason": f"profit-take +{PROFIT_TAKE_HALF_PCT*100:.0f}% half",
+                              "reason": f"profit-take +{PROFIT_TAKE_HALF_PCT * 100:.0f}% half",
                               "plpc": plpc, "price": cur_price,
                               "portfolio_value": equity})
                 log_outcome({"timestamp": now, "ticker": ticker, "action": "sell",
@@ -375,8 +381,8 @@ def main():
     exposure = _total_market_value(final_positions)
     exposure_pct = (exposure / final_equity * 100) if final_equity > 0 else 0
 
-    eq_str = (f"${final_equity/1_000_000:.1f}M" if final_equity >= 1_000_000
-              else f"${final_equity/1_000:.1f}K")
+    eq_str = (f"${final_equity / 1_000_000:.1f}M" if final_equity >= 1_000_000
+              else f"${final_equity / 1_000:.1f}K")
     pl_sign = "+" if daily_pl >= 0 else ""
     pl_pct = (daily_pl / final_equity * 100) if final_equity > 0 else 0
 
@@ -410,7 +416,7 @@ def main():
     lines.append("Watching: " + ", ".join(f"{t} RSI {r:.0f}" for t, r in watches)
                  if watches else "No oversold signals. Holding.")
     if buys_halted:
-        lines.append(f"CIRCUIT BREAKER: down {day_drawdown*100:.1f}% today — buys halted")
+        lines.append(f"CIRCUIT BREAKER: down {day_drawdown * 100:.1f}% today — buys halted")
     if cooldown_tickers:
         lines.append(f"Cooldown: {', '.join(sorted(cooldown_tickers))}")
     print("\n".join(lines))
@@ -443,11 +449,11 @@ def main():
         mv = float(p.get("market_value", 0))
         plpc = float(p.get("unrealized_plpc", 0) or 0)
         sign = "+" if plpc >= 0 else ""
-        dashboard_lines.append(f"• {p['ticker']}: ${mv:,.0f} ({sign}{plpc*100:.1f}%)")
+        dashboard_lines.append(f"• {p['ticker']}: ${mv:,.0f} ({sign}{plpc * 100:.1f}%)")
     if watches:
         dashboard_lines.append("")
-        dashboard_lines.append("**Watching (RSI<35):** "
-                               + ", ".join(f"{t} RSI {r:.0f}" for t, r in watches))
+        watch_str = ", ".join(f"{t} RSI {r:.0f}" for t, r in watches)
+        dashboard_lines.append(f"**Watching (RSI<35):** {watch_str}")
     dashboard_lines.append("")
     dashboard_lines.append(f"_Updated {now[:19].replace('T', ' ')} UTC_")
     try:
