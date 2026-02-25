@@ -53,28 +53,36 @@ MAX_POSITIONS = 12             # Hard cap on concurrent positions
 ALLOC_STRONG = 0.08            # RSI < 15: 8% of equity per position
 ALLOC_NORMAL = 0.05            # RSI < 25: 5% of equity per position
 BUY_BUFFER = 0.97              # Reserve 3% of BP for slippage
+DUST_THRESHOLD_PCT = 0.005     # Auto-sell positions < 0.5% of portfolio
 
 # Entry filters
-RSI_BUY_THRESHOLD = 25         # Only buy below this RSI (was 30)
-RSI_STRONG_THRESHOLD = 15      # Larger allocation below this
-SMA_PERIOD = 50                # Price must be near SMA(50) to buy (uptrend filter)
-VOLUME_SPIKE_RATIO = 1.2       # Recent volume must be 1.2x the 20-day avg
+RSI_BUY_THRESHOLD = 30         # Buy below this RSI (widened from 25 — was too tight)
+RSI_STRONG_THRESHOLD = 20      # Larger allocation below this
+SMA_PERIOD = 20                # SMA(20) — short enough for IEX data availability
+VOLUME_SPIKE_RATIO = 0.8       # Volume >= 80% of 20-day avg (IEX underreports volume)
+MIN_BARS_FOR_SMA = 20          # Skip SMA filter if fewer bars available
+
+# Add-to-winners: deploy idle cash into best existing positions
+ADD_TO_WINNERS_CASH_PCT = 0.40  # Trigger when cash > 40% of equity
+ADD_TO_WINNER_MIN_PLPC = 0.02  # Position must be +2% or better
+ADD_TO_WINNER_ALLOC = 0.04     # Add 4% equity per top-up
+ADD_TO_WINNER_MAX_PCT = 0.15   # Don't grow any position beyond 15% of portfolio
 
 # Exit — profit taking
-PROFIT_TAKE_FULL_PCT = 0.08    # +8% → sell entire position (was +4%)
-PROFIT_TAKE_HALF_PCT = 0.04    # +4% → sell half (was +2%)
+PROFIT_TAKE_FULL_PCT = 0.08    # +8% → sell entire position
+PROFIT_TAKE_HALF_PCT = 0.04    # +4% → sell half
 TRAILING_ACTIVATE_PCT = 0.05   # Activate trailing stop once +5% reached
 TRAILING_STOP_PCT = 0.02       # Trail -2% from peak once activated
 
 # Exit — stop loss
-STOP_LOSS_PCT = -0.03          # -3% → sell all (was -4%)
+STOP_LOSS_PCT = -0.03          # -3% → sell all
 
 # RSI-based exits
-RSI_SELL_ALL = 70              # RSI > 70 → sell all (was 65)
-RSI_SELL_HALF = 60             # RSI > 60 → sell half (was 55)
+RSI_SELL_ALL = 70              # RSI > 70 → sell all
+RSI_SELL_HALF = 60             # RSI > 60 → sell half
 
 # Circuit breaker
-DAILY_DRAWDOWN_HALT = -0.02    # Halt buys if down >2% intraday (was -3%)
+DAILY_DRAWDOWN_HALT = -0.02    # Halt buys if down >2% intraday
 
 _COOLDOWN_FILE = LOGS_DIR / "cooldown.json"
 _PEAK_FILE = LOGS_DIR / "trailing_peaks.json"
@@ -269,6 +277,30 @@ def main():
 
     _save_peaks(peaks)
     positions = get_positions()
+
+    # === PHASE 1b: Dust cleanup — sell tiny positions that can't be managed ===
+    dust_threshold = equity * DUST_THRESHOLD_PCT
+    for pos in positions:
+        ticker = pos["ticker"]
+        mv = float(pos.get("market_value", 0))
+        qty = int(pos["qty"])
+        available_qty = pos.get("available_qty", qty)
+        if mv < dust_threshold and available_qty > 0 and qty > 0:
+            plpc = float(pos.get("unrealized_plpc", 0) or 0)
+            sell(ticker, min(qty, available_qty))
+            sell_candidates.append((ticker, qty, 0, "dust-cleanup"))
+            log_decision({"timestamp": now, "action": "sell", "ticker": ticker,
+                          "shares": qty, "reason": "dust-cleanup (< 0.5% of portfolio)",
+                          "plpc": plpc, "price": pos.get("current_price"),
+                          "portfolio_value": equity})
+            log_outcome({"timestamp": now, "ticker": ticker, "action": "sell",
+                         "reason": "dust-cleanup", "plpc": plpc, "shares": qty})
+            peaks.pop(ticker, None)
+            logger.info("DUST-CLEANUP %s: $%.0f < $%.0f threshold", ticker, mv,
+                        dust_threshold)
+
+    _save_peaks(peaks)
+    positions = get_positions()
     held_tickers = {p["ticker"] for p in positions}
 
     # === PHASE 2: RSI-based sells and buys ===
@@ -338,19 +370,21 @@ def main():
                                 MAX_EXPOSURE_PCT * 100)
                     continue
 
-                # SMA trend filter: only buy dips in uptrends
-                sma = compute_sma(close_prices, SMA_PERIOD)
+                # SMA trend filter: only buy dips in uptrends (skip if insufficient data)
+                sma = None
                 cur_close = close_prices[-1] if close_prices else 0
-                if sma and cur_close < sma * 0.97:
-                    logger.info("Skipping buy %s: price $%.2f below SMA50 $%.2f (downtrend)",
-                                ticker, cur_close, sma)
+                if len(close_prices) >= MIN_BARS_FOR_SMA:
+                    sma = compute_sma(close_prices, SMA_PERIOD)
+                if sma and cur_close < sma * 0.95:
+                    logger.info("Skipping buy %s: price $%.2f > 5%% below SMA%d $%.2f",
+                                ticker, cur_close, SMA_PERIOD, sma)
                     continue
 
-                # Volume confirmation: above-average volume on the dip
+                # Volume confirmation: not abnormally low (IEX volume underreports)
                 vol_avg = avg_volume(bars, 20)
                 last_vol = bars[-1].get("volume", 0) if bars else 0
-                if vol_avg and last_vol < vol_avg * VOLUME_SPIKE_RATIO:
-                    logger.info("Skipping buy %s: volume %d < %.0f (need %.1fx avg)",
+                if vol_avg and vol_avg > 0 and last_vol < vol_avg * VOLUME_SPIKE_RATIO:
+                    logger.info("Skipping buy %s: volume %d < %.0f (%.1fx avg required)",
                                 ticker, last_vol, vol_avg * VOLUME_SPIKE_RATIO,
                                 VOLUME_SPIKE_RATIO)
                     continue
@@ -398,6 +432,49 @@ def main():
                               }})
                 log_outcome({"timestamp": now, "ticker": ticker, "action": "buy",
                              "reason": f"RSI {rsi:.1f}", "shares": shares, "price": price})
+
+    # === PHASE 3: Add to winners when cash is too high ===
+    if not buys_halted:
+        acct = get_account()
+        cash_now = float(acct.get("cash", 0)) if acct else 0
+        positions = get_positions()
+        current_exposure = _total_market_value(positions)
+        if cash_now > equity * ADD_TO_WINNERS_CASH_PCT:
+            winners = [p for p in positions
+                       if float(p.get("unrealized_plpc", 0) or 0) >= ADD_TO_WINNER_MIN_PLPC]
+            winners.sort(key=lambda x: -float(x.get("unrealized_plpc", 0) or 0))
+            for pos in winners[:3]:
+                ticker = pos["ticker"]
+                mv = float(pos.get("market_value", 0))
+                if mv >= equity * ADD_TO_WINNER_MAX_PCT:
+                    continue
+                if current_exposure >= equity * MAX_EXPOSURE_PCT:
+                    break
+                price = float(pos.get("current_price", 0))
+                if price <= 0:
+                    continue
+                room = min(equity * ADD_TO_WINNER_ALLOC,
+                           equity * ADD_TO_WINNER_MAX_PCT - mv,
+                           equity * MAX_EXPOSURE_PCT - current_exposure)
+                if room <= 0:
+                    continue
+                shares = math.floor(room / price)
+                if shares < 1:
+                    continue
+                buy(ticker, shares)
+                cost = shares * price
+                current_exposure += cost
+                plpc = float(pos.get("unrealized_plpc", 0) or 0)
+                buy_candidates.append((ticker, shares, 0,
+                                       f"add-to-winner ({plpc * 100:+.1f}%)"))
+                log_decision({"timestamp": now, "action": "buy", "ticker": ticker,
+                              "shares": shares, "price": price,
+                              "reason": f"add-to-winner (cash {cash_now / equity * 100:.0f}%)",
+                              "portfolio_value": equity})
+                log_outcome({"timestamp": now, "ticker": ticker, "action": "buy",
+                             "reason": "add-to-winner", "shares": shares, "price": price})
+                logger.info("ADD-TO-WINNER %s: +%d shares at $%.2f (was %+.1f%%)",
+                            ticker, shares, price, plpc * 100)
 
     # === Summary & Discord output ===
     final_account = get_account()
