@@ -439,27 +439,24 @@ def main():
         post_trades("\n".join(trades_lines))
 
     # ── #cycles (stdout → OpenClaw): clean, no log lines ──
-    # Only print when trades happened or something notable occurred
-    if had_trades or buys_halted:
-        cycle_lines = [status_line]
-        if sell_candidates:
-            sold_parts = []
-            for t, q, _, reason in sell_candidates:
-                short = reason.split("(")[0].strip().replace("profit-take-", "TP-")
-                sold_parts.append(f"{t} ×{q} ({short})")
-            cycle_lines.append("Sold: " + ", ".join(sold_parts))
-        if buy_candidates:
-            bought_parts = [f"{t} ×{q}" for t, q, _, _ in buy_candidates]
-            cycle_lines.append("Bought: " + ", ".join(bought_parts))
-        if buys_halted:
-            cycle_lines.append(
-                f"⚠ CIRCUIT BREAKER: down {day_drawdown * 100:.1f}% today")
-        if watches:
-            cycle_lines.append(
-                "👀 " + ", ".join(f"{t} RSI {r:.0f}" for t, r in watches))
-        print("\n".join(cycle_lines))
-    else:
-        logger.debug("No trades, skipping cycles post")
+    # Always print status line for cron heartbeat monitoring
+    cycle_lines = [status_line]
+    if sell_candidates:
+        sold_parts = []
+        for t, q, _, reason in sell_candidates:
+            short = reason.split("(")[0].strip().replace("profit-take-", "TP-")
+            sold_parts.append(f"{t} ×{q} ({short})")
+        cycle_lines.append("Sold: " + ", ".join(sold_parts))
+    if buy_candidates:
+        bought_parts = [f"{t} ×{q}" for t, q, _, _ in buy_candidates]
+        cycle_lines.append("Bought: " + ", ".join(bought_parts))
+    if buys_halted:
+        cycle_lines.append(
+            f"⚠ CIRCUIT BREAKER: down {day_drawdown * 100:.1f}% today")
+    if watches:
+        cycle_lines.append(
+            "👀 " + ", ".join(f"{t} RSI {r:.0f}" for t, r in watches))
+    print("\n".join(cycle_lines))
 
     # ── Self-improvement logging (always) ──
     decisions_today = [d for d in load_recent_decisions(limit=500)
