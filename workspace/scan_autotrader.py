@@ -1,15 +1,17 @@
 #!/usr/bin/env python3
-"""RSI mean-reversion scanner (v2 — improved risk management).
+"""RSI mean-reversion scanner (v3 — live-trading ready).
 
-Key changes from v1:
+Strategy features:
 - Max exposure capped at 100% equity (no margin)
-- Max 12 concurrent positions
-- Tighter RSI entry: only < 25 (was < 30), with SMA/volume/momentum confirmation
-- Wider profit targets: +8% full / +4% half (was +4% / +2%) — let winners run
-- Tighter stop-loss: -3% (was -4%) — cut losers faster
-- Trailing stop: lock in gains once +5% reached (trail at -2% from peak)
-- Position sizing: 5-8% equity (was 10-15%)
-- Circuit breaker at -2% daily (was -3%)
+- Max 12 concurrent positions, dust cleanup, add-to-winners
+- RSI entry < 30 with SMA/volume/momentum confirmation
+- Profit targets: +8% full / +4% half, trailing stop at +5%/-2%
+- Stop-loss at -3%, circuit breaker at -2% daily
+
+Live-trading safeguards (GATEWAY_MODE=live):
+- PDT protection: tracks day trades, blocks at 3/5-day limit (accounts < $25K)
+- Skips expensive tickers when allocation rounds to 0 shares
+- Logs every order with reason for auditability
 """
 import json
 import logging
@@ -25,6 +27,8 @@ from lib.alpaca_client import get_account, get_positions, get_bars, get_snapshot
 from lib.rsi import compute_rsi, compute_sma, avg_volume, rsi_turning_up
 from lib.decisions import log_decision, load_recent_decisions, rotate_decisions_log, log_outcome, append_daily_review
 from lib.config import LOGS_DIR
+from lib.pdt import (is_pdt_restricted, count_day_trades, day_trades_remaining,
+                     would_be_day_trade, record_day_trade, cleanup_old_records)
 
 try:
     from lib.discord_post import post_trades, update_dashboard, update_chart
@@ -46,7 +50,11 @@ logging.basicConfig(
 )
 logger = logging.getLogger("autotrader")
 
-# ── Strategy parameters (v2) ────────────────────────────────────────────────
+# ── Mode: paper vs live ──────────────────────────────────────────────────────
+# Set GATEWAY_MODE=live in .env to enable PDT protection + extra safeguards
+LIVE_MODE = os.environ.get("GATEWAY_MODE", "paper").lower() == "live"
+
+# ── Strategy parameters (v3) ────────────────────────────────────────────────
 # Risk management
 MAX_EXPOSURE_PCT = 1.00        # Max 100% equity deployed (no margin)
 MAX_POSITIONS = 12             # Hard cap on concurrent positions
@@ -127,6 +135,22 @@ def _total_market_value(positions):
     return sum(float(p.get("market_value", 0)) for p in positions)
 
 
+def _check_pdt(ticker, side, today, todays_decisions, pdt_active):
+    """Return True if this trade is safe from PDT. False = blocked."""
+    if not pdt_active:
+        return True
+    if not would_be_day_trade(ticker, side, today, todays_decisions):
+        return True
+    remaining = day_trades_remaining()
+    if remaining <= 0:
+        logger.warning("PDT BLOCKED %s %s: 0 day trades remaining", side.upper(), ticker)
+        return False
+    logger.warning("PDT: %s %s would use day trade (%d remaining)",
+                   side.upper(), ticker, remaining)
+    record_day_trade(ticker, today)
+    return True
+
+
 def _post_chart_throttled(now_iso):
     """Post equity chart to Discord, but at most once per CHART_INTERVAL_SEC."""
     import time as _time
@@ -164,6 +188,14 @@ def main():
         return
     equity = float(account.get("equity", 0))
     positions = get_positions()
+
+    # PDT protection (live mode, accounts < $25K)
+    pdt_active = LIVE_MODE and is_pdt_restricted(equity)
+    if LIVE_MODE:
+        logger.info("LIVE MODE — PDT %s (equity $%.0f, %d day trades used)",
+                    "ACTIVE" if pdt_active else "exempt (>$25K)",
+                    equity, count_day_trades())
+        cleanup_old_records()
 
     cooldown_tickers = _load_cooldown(today)
     if cooldown_tickers:
@@ -245,8 +277,10 @@ def main():
                             ticker, peak, cur_price, drop_from_peak * 100)
                 continue
 
-        # Profit-take full: +8%
+        # Profit-take full: +8% (PDT-checked — skip if it would waste a day trade)
         if plpc >= PROFIT_TAKE_FULL_PCT:
+            if not _check_pdt(ticker, "sell", today, todays_decisions, pdt_active):
+                continue
             sell_qty = min(qty, available_qty)
             sell(ticker, sell_qty)
             sell_candidates.append((ticker, sell_qty, 0, "profit-take-full"))
@@ -260,8 +294,10 @@ def main():
             peaks.pop(ticker, None)
             continue
 
-        # Profit-take half: +4%
+        # Profit-take half: +4% (PDT-checked)
         if plpc >= PROFIT_TAKE_HALF_PCT:
+            if not _check_pdt(ticker, "sell", today, todays_decisions, pdt_active):
+                continue
             sell_qty = min(qty // 2, available_qty)
             if sell_qty > 0:
                 sell(ticker, sell_qty)
@@ -342,6 +378,9 @@ def main():
                     sell_qty = min(qty // 2, available_qty)
                     reason = f"RSI sell-half ({rsi:.1f})"
                 if sell_qty > 0:
+                    if not _check_pdt(ticker, "sell", today, todays_decisions,
+                                      pdt_active):
+                        continue
                     sell(ticker, sell_qty)
                     sell_candidates.append((ticker, sell_qty, rsi, reason))
                     log_decision({"timestamp": now, "action": "sell", "ticker": ticker,
@@ -413,8 +452,10 @@ def main():
                     continue
                 shares = math.floor(target_cost / price)
                 if shares < 1:
-                    logger.warning("Skipping buy %s: can't afford 1 share ($%.2f)",
-                                   ticker, price)
+                    logger.info("Skipping buy %s: price $%.2f too high for allocation"
+                                " ($%.0f)", ticker, price, target_cost)
+                    continue
+                if not _check_pdt(ticker, "buy", today, todays_decisions, pdt_active):
                     continue
 
                 buy(ticker, shares)

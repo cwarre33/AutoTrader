@@ -65,6 +65,16 @@ No automated test suite exists. Verify by:
 
 If Alpaca API keys are regenerated, the `.env` file must be regenerated and the gateway restarted (`docker compose down && docker compose up -d openclaw-gateway`). The `alpaca_client.py` module caches clients at module level, so a container restart is required for key changes to take effect.
 
+### Live trading mode
+
+Set `GATEWAY_MODE=live` in `.env` to enable live-trading safeguards:
+
+- **PDT protection** (`lib/pdt.py`): Tracks day trades in `logs/pdt_trades.jsonl`. Accounts under $25K are limited to 3 day trades per 5-business-day window. Stop-losses always execute (capital protection overrides PDT). Profit-taking and RSI sells are PDT-checked.
+- **Expensive stock handling**: Stocks where allocation rounds to 0 shares are skipped with a log message instead of erroring.
+- All strategy parameters are at the top of `workspace/scan_autotrader.py` for easy tuning.
+
+To switch to live: change `ALPACA_PAPER_TRADE` to `False` in docker-compose.yml and set `GATEWAY_MODE=live` in `.env`. Start during off-hours so you can watch the first scans.
+
 ### Docker in Cloud VM
 
 Docker requires `fuse-overlayfs` storage driver and `iptables-legacy` in the Cursor Cloud VM (nested container environment). The daemon config at `/etc/docker/daemon.json` must set `"storage-driver": "fuse-overlayfs"`.
