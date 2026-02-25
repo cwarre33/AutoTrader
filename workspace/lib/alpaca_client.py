@@ -97,10 +97,10 @@ def get_positions():
         sell_qty_by_symbol = get_open_sell_qty_by_symbol()
         result = []
         for p in positions:
-            qty = int(float(p.qty))
+            qty = float(p.qty)
             qty_avail = getattr(p, "qty_available", None)
             if qty_avail is not None and str(qty_avail).strip() != "":
-                available_qty = int(float(qty_avail))
+                available_qty = float(qty_avail)
             else:
                 held = sell_qty_by_symbol.get(p.symbol.upper(), 0)
                 available_qty = max(0, qty - held)

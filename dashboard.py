@@ -254,5 +254,90 @@ def _get_latest_assistant_response():
     return None
 
 
+@app.route("/api/sim")
+def api_sim():
+    """Return simulated portfolio state with live prices."""
+    sim_file = BASE_DIR / "workspace" / "logs" / "sim_portfolio.json"
+    if not sim_file.exists():
+        return jsonify({"error": "No simulated portfolio. Set SIMULATED_BALANCE in .env and run a scan."}), 404
+    try:
+        sim_data = json.loads(sim_file.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError) as e:
+        return jsonify({"error": str(e)}), 500
+
+    positions = sim_data.get("positions", {})
+    if not positions:
+        starting = sim_data.get("starting_balance", 0)
+        cash = sim_data.get("cash", 0)
+        return jsonify({
+            "starting_balance": starting,
+            "equity": cash,
+            "cash": cash,
+            "market_value": 0,
+            "unrealized_pl": 0,
+            "realized_pl": sim_data.get("realized_pl", 0),
+            "total_pl": round(cash - starting, 2),
+            "total_pl_pct": round((cash - starting) / starting * 100, 2) if starting > 0 else 0,
+            "positions": [],
+            "position_count": 0,
+            "exposure_pct": 0,
+            "trades": sim_data.get("trades", [])[-20:],
+        })
+
+    try:
+        result = subprocess.run(
+            ["docker", "exec", GATEWAY_CONTAINER, "python3", "-c",
+             "import sys,json;sys.path.insert(0,'/home/node/.openclaw/workspace');"
+             "from lib.alpaca_client import get_positions;"
+             "print(json.dumps({p['ticker']:p['current_price'] for p in get_positions()}))"],
+            capture_output=True, text=True, timeout=15,
+            env={**os.environ, "MSYS_NO_PATHCONV": "1"},
+        )
+        if result.returncode == 0:
+            live_prices = json.loads(result.stdout)
+        else:
+            live_prices = {}
+    except Exception:
+        live_prices = {}
+
+    starting = sim_data.get("starting_balance", 0)
+    cash = sim_data.get("cash", 0)
+    realized_pl = sim_data.get("realized_pl", 0)
+    holdings = []
+    total_mv = 0
+    total_unrealized = 0
+    for ticker, pos in positions.items():
+        price = live_prices.get(ticker, pos.get("avg_entry", 0))
+        shares = pos.get("shares", 0)
+        mv = shares * price
+        cost = shares * pos.get("avg_entry", 0)
+        unrealized = mv - cost
+        plpc = (price / pos["avg_entry"] - 1) if pos.get("avg_entry", 0) > 0 else 0
+        total_mv += mv
+        total_unrealized += unrealized
+        holdings.append({
+            "ticker": ticker, "shares": round(shares, 4),
+            "avg_entry": pos.get("avg_entry", 0), "current_price": price,
+            "market_value": round(mv, 2), "unrealized_pl": round(unrealized, 2),
+            "unrealized_plpc": round(plpc, 4),
+        })
+    equity = cash + total_mv
+    total_pl = equity - starting
+    return jsonify({
+        "starting_balance": starting,
+        "equity": round(equity, 2),
+        "cash": round(cash, 2),
+        "market_value": round(total_mv, 2),
+        "unrealized_pl": round(total_unrealized, 2),
+        "realized_pl": realized_pl,
+        "total_pl": round(total_pl, 2),
+        "total_pl_pct": round(total_pl / starting * 100, 2) if starting > 0 else 0,
+        "positions": sorted(holdings, key=lambda x: -x["market_value"]),
+        "position_count": len(holdings),
+        "exposure_pct": round(total_mv / equity * 100, 1) if equity > 0 else 0,
+        "trades": sim_data.get("trades", [])[-20:],
+    })
+
+
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=5050, debug=True)

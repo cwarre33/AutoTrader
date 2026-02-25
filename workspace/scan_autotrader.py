@@ -43,12 +43,15 @@ if not os.environ.get("SIMULATED_BALANCE") or not os.environ.get("GATEWAY_MODE")
             break
 
 from lib.config import validate_env, load_watchlist
-from lib.alpaca_client import get_account, get_positions, get_bars, buy_notional, sell, get_portfolio_history
+from lib.alpaca_client import (get_account, get_positions, get_bars,
+                               buy_notional, sell, get_portfolio_history)
 from lib.rsi import compute_rsi, compute_sma, avg_volume, rsi_turning_up
 from lib.decisions import log_decision, load_recent_decisions, rotate_decisions_log, log_outcome, append_daily_review
 from lib.config import LOGS_DIR
 from lib.pdt import (is_pdt_restricted, count_day_trades, day_trades_remaining,
                      would_be_day_trade, record_day_trade, cleanup_old_records)
+from lib.sim_portfolio import (init as sim_init, record_buy as sim_buy,
+                               record_sell as sim_sell)
 
 try:
     from lib.discord_post import post_trades, update_dashboard, update_chart
@@ -159,6 +162,25 @@ def _total_market_value(positions):
     return sum(float(p.get("market_value", 0)) for p in positions)
 
 
+def _sync_sim_trades(sell_candidates, buy_candidates, positions, now, sim_mode):
+    """Sync all trades from this cycle into the sim portfolio.
+
+    sell_candidates: [(ticker, qty, rsi, reason), ...]
+    buy_candidates: [(ticker, notional, rsi, reason), ...]  (notional = $ amount)
+    """
+    if not sim_mode:
+        return
+    price_map = {p["ticker"]: float(p.get("current_price", 0)) for p in positions}
+    for ticker, qty, _, _ in sell_candidates:
+        price = price_map.get(ticker, 0)
+        if price > 0:
+            sim_sell(ticker, qty, price, now)
+    for ticker, notional, _, _ in buy_candidates:
+        price = price_map.get(ticker, 0)
+        if price > 0 and notional > 0:
+            sim_buy(ticker, notional, price, now)
+
+
 def _check_pdt(ticker, side, today, todays_decisions, pdt_active):
     """Return True if this trade is safe from PDT. False = blocked."""
     if not pdt_active:
@@ -214,7 +236,9 @@ def main():
     equity = SIMULATED_BALANCE if SIMULATED_BALANCE > 0 else actual_equity
     positions = get_positions()
 
-    if SIMULATED_BALANCE > 0:
+    sim_mode = SIMULATED_BALANCE > 0
+    if sim_mode:
+        sim_init(SIMULATED_BALANCE)
         logger.info("SIMULATED BALANCE: $%.2f (actual account: $%.2f)",
                     equity, actual_equity)
 
@@ -253,7 +277,7 @@ def main():
     # === PHASE 1: Stop-loss, trailing stop, and profit-taking ===
     for pos in positions:
         ticker = pos["ticker"]
-        qty = int(pos["qty"])
+        qty = float(pos["qty"])
         available_qty = pos.get("available_qty", qty)
         plpc = float(pos.get("unrealized_plpc", 0) or 0)
         cur_price = float(pos.get("current_price", 0))
@@ -327,8 +351,8 @@ def main():
         if plpc >= PROFIT_TAKE_HALF_PCT:
             if not _check_pdt(ticker, "sell", today, todays_decisions, pdt_active):
                 continue
-            sell_qty = min(qty // 2, available_qty)
-            if sell_qty > 0:
+            sell_qty = min(qty / 2, available_qty)
+            if sell_qty > 0.0001:
                 sell(ticker, sell_qty)
                 sell_candidates.append((ticker, sell_qty, 0, "profit-take-half"))
                 log_decision({"timestamp": now, "action": "sell", "ticker": ticker,
@@ -348,7 +372,7 @@ def main():
     for pos in positions:
         ticker = pos["ticker"]
         mv = float(pos.get("market_value", 0))
-        qty = int(pos["qty"])
+        qty = float(pos["qty"])
         available_qty = pos.get("available_qty", qty)
         if mv < dust_threshold and available_qty > 0 and qty > 0:
             plpc = float(pos.get("unrealized_plpc", 0) or 0)
@@ -392,7 +416,7 @@ def main():
                 pos = next((p for p in positions if p["ticker"] == ticker), None)
                 if not pos:
                     continue
-                qty = int(pos["qty"])
+                qty = float(pos["qty"])
                 available_qty = pos.get("available_qty", qty)
                 if available_qty <= 0:
                     logger.warning("Skipping RSI sell %s: %d shares held by open orders",
@@ -404,9 +428,9 @@ def main():
                     sell_qty = min(qty, available_qty)
                     reason = f"RSI sell-all ({rsi:.1f})"
                 elif rsi > RSI_SELL_HALF:
-                    sell_qty = min(qty // 2, available_qty)
+                    sell_qty = min(qty / 2, available_qty)
                     reason = f"RSI sell-half ({rsi:.1f})"
-                if sell_qty > 0:
+                if sell_qty > 0.0001:
                     if not _check_pdt(ticker, "sell", today, todays_decisions,
                                       pdt_active):
                         continue
@@ -483,7 +507,7 @@ def main():
                 remaining_bp = max(0, remaining_bp - notional)
                 current_exposure += notional
                 n_positions += 1
-                buy_candidates.append((ticker, 0, rsi,
+                buy_candidates.append((ticker, notional, rsi,
                                        f"RSI buy ${notional:.0f} ({rsi:.1f})"))
                 log_decision({"timestamp": now, "action": "buy", "ticker": ticker,
                               "notional": round(notional, 2), "rsi": rsi,
@@ -524,7 +548,7 @@ def main():
                 buy_notional(ticker, notional)
                 current_exposure += notional
                 plpc = float(pos.get("unrealized_plpc", 0) or 0)
-                buy_candidates.append((ticker, 0, 0,
+                buy_candidates.append((ticker, notional, 0,
                                        f"add-to-winner ${notional:.0f}"
                                        f" ({plpc * 100:+.1f}%)"))
                 log_decision({"timestamp": now, "action": "buy", "ticker": ticker,
@@ -538,9 +562,12 @@ def main():
                 logger.info("ADD-TO-WINNER %s: +$%.2f (was %+.1f%%)",
                             ticker, notional, plpc * 100)
 
-    # === Summary & Discord output ===
+    # === Sync sim portfolio ===
     final_account = get_account()
     final_positions = get_positions()
+    _sync_sim_trades(sell_candidates, buy_candidates, final_positions, now, sim_mode)
+
+    # === Summary & Discord output ===
     final_equity = float(final_account.get("equity", 0)) if final_account else equity
     actual_equity = final_equity
     daily_pl = sum(float(p.get("unrealized_pl", 0) or 0) for p in final_positions)
