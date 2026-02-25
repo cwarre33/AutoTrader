@@ -118,10 +118,13 @@ def _edit(channel_id: str, message_id: str, content: str) -> bool:
 
 
 def post_trades(trades_text: str) -> bool:
-    """Post trade execution summary. Prefers webhook if set."""
+    """Post trade execution summary. Tries webhook first, falls back to bot API."""
     _ensure_env()
     if TRADES_WEBHOOK_URL:
-        return _webhook_post(TRADES_WEBHOOK_URL, trades_text) is not None
+        result = _webhook_post(TRADES_WEBHOOK_URL, trades_text)
+        if result is not None:
+            return True
+        logger.warning("Webhook failed for trades, falling back to bot API")
     return _post(TRADES_CHANNEL_ID, trades_text)
 
 
