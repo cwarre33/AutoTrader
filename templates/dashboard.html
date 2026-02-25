@@ -95,6 +95,7 @@
 
 <div class="tabs">
   <div class="tab active" data-panel="overview">Overview</div>
+  <div class="tab" data-panel="sim">Sim Portfolio</div>
   <div class="tab" data-panel="decisions">Decisions</div>
   <div class="tab" data-panel="cycles">Cycles</div>
   <div class="tab" data-panel="chat">Chat</div>
@@ -118,6 +119,30 @@
         <thead><tr><th>Ticker</th><th>Qty</th><th>Avg Entry</th><th>Current</th><th>Mkt Value</th><th>P&L</th><th>P&L %</th></tr></thead>
         <tbody id="positionsBody"><tr><td colspan="7" class="loading">Loading...</td></tr></tbody>
       </table>
+    </div>
+  </div>
+
+  <!-- Sim Portfolio Panel -->
+  <div class="panel" id="panel-sim">
+    <div class="stats-grid" id="simStatsGrid">
+      <div class="stat-card"><div class="stat-label">Sim Equity</div><div class="stat-value" id="simEquity">--</div></div>
+      <div class="stat-card"><div class="stat-label">Starting Balance</div><div class="stat-value" id="simStarting">--</div></div>
+      <div class="stat-card"><div class="stat-label">Sim Cash</div><div class="stat-value" id="simCash">--</div></div>
+      <div class="stat-card"><div class="stat-label">Positions</div><div class="stat-value" id="simPosCount">--</div></div>
+      <div class="stat-card"><div class="stat-label">Total P&L</div><div class="stat-value" id="simTotalPL">--</div></div>
+      <div class="stat-card"><div class="stat-label">Return %</div><div class="stat-value" id="simReturnPct">--</div></div>
+    </div>
+    <button class="refresh-btn" onclick="loadSim()">Refresh</button>
+    <div class="table-wrap">
+      <div class="table-title">Sim Positions (fractional shares)</div>
+      <table>
+        <thead><tr><th>Ticker</th><th>Shares</th><th>Avg Entry</th><th>Current</th><th>Mkt Value</th><th>P&L</th><th>P&L %</th></tr></thead>
+        <tbody id="simPositionsBody"><tr><td colspan="7" class="loading">Loading...</td></tr></tbody>
+      </table>
+    </div>
+    <div class="table-wrap" style="margin-top:16px">
+      <div class="table-title">Recent Sim Trades</div>
+      <div id="simTradesContainer" style="max-height:300px;overflow-y:auto;padding:8px 12px"><div class="loading">Loading...</div></div>
     </div>
   </div>
 
@@ -236,6 +261,72 @@ async function loadOverview() {
     }
   } catch (e) {
     console.error('Failed to load overview:', e);
+  }
+}
+
+// Sim Portfolio
+async function loadSim() {
+  try {
+    const res = await fetch('/api/sim');
+    if (res.status === 404) {
+      document.getElementById('simPositionsBody').innerHTML = '<tr><td colspan="7" class="empty">No sim portfolio yet. Set SIMULATED_BALANCE in .env and run a scan.</td></tr>';
+      document.getElementById('simTradesContainer').innerHTML = '<div class="empty">No trades yet.</div>';
+      return;
+    }
+    const sim = await res.json();
+    if (sim.error) {
+      document.getElementById('simPositionsBody').innerHTML = `<tr><td colspan="7" class="empty">${sim.error}</td></tr>`;
+      return;
+    }
+
+    document.getElementById('simEquity').textContent = fmt$(sim.equity);
+    document.getElementById('simStarting').textContent = fmt$(sim.starting_balance);
+    document.getElementById('simCash').textContent = fmt$(sim.cash);
+    document.getElementById('simPosCount').textContent = sim.position_count || 0;
+
+    const plEl = document.getElementById('simTotalPL');
+    plEl.textContent = (sim.total_pl >= 0 ? '+' : '') + fmt$(sim.total_pl);
+    plEl.className = 'stat-value ' + (sim.total_pl >= 0 ? 'positive' : 'negative');
+
+    const pctEl = document.getElementById('simReturnPct');
+    pctEl.textContent = (sim.total_pl_pct >= 0 ? '+' : '') + sim.total_pl_pct.toFixed(2) + '%';
+    pctEl.className = 'stat-value ' + (sim.total_pl_pct >= 0 ? 'positive' : 'negative');
+
+    if (sim.positions && sim.positions.length > 0) {
+      const rows = sim.positions.map(p => {
+        const pl = Number(p.unrealized_pl || 0);
+        const plClass = pl >= 0 ? 'pl-positive' : 'pl-negative';
+        return `<tr>
+          <td><strong>${p.ticker}</strong></td>
+          <td>${Number(p.shares).toFixed(4)}</td>
+          <td>${fmt$(p.avg_entry)}</td>
+          <td>${fmt$(p.current_price)}</td>
+          <td>${fmt$(p.market_value)}</td>
+          <td class="${plClass}">${fmt$(pl)}</td>
+          <td class="${plClass}">${fmtPct(p.unrealized_plpc)}</td>
+        </tr>`;
+      }).join('');
+      document.getElementById('simPositionsBody').innerHTML = rows;
+    } else {
+      document.getElementById('simPositionsBody').innerHTML = '<tr><td colspan="7" class="empty">No sim positions</td></tr>';
+    }
+
+    if (sim.trades && sim.trades.length > 0) {
+      document.getElementById('simTradesContainer').innerHTML = sim.trades.reverse().map(t => {
+        const actionClass = t.action === 'buy' ? 'action-buy' : 'action-sell';
+        const plStr = t.pl != null ? ` P&L: ${fmt$(t.pl)}` : '';
+        const amt = t.notional ? `$${Number(t.notional).toFixed(2)}` : `×${Number(t.shares).toFixed(4)}`;
+        return `<div class="entry" style="padding:8px 12px;margin-bottom:6px">
+          <span class="entry-action ${actionClass}">${t.action}</span>
+          <strong>${t.ticker}</strong> ${amt} @ ${fmt$(t.price)}${plStr}
+          <span class="entry-time">${fmtTime(t.timestamp)}</span>
+        </div>`;
+      }).join('');
+    } else {
+      document.getElementById('simTradesContainer').innerHTML = '<div class="empty">No sim trades yet.</div>';
+    }
+  } catch (e) {
+    console.error('Failed to load sim:', e);
   }
 }
 
@@ -365,6 +456,7 @@ setInterval(() => {
   if (active) {
     const panel = active.dataset.panel;
     if (panel === 'overview') loadOverview();
+    else if (panel === 'sim') loadSim();
     else if (panel === 'decisions') loadDecisions();
     else if (panel === 'cycles') loadCycles();
   }
