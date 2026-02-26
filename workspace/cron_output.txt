@@ -1,3 +1,5 @@
-📊 $98.6K · +$542 (+0.55%) · 17 positions
-No trades this cycle.
-Watching: DIS RSI 41
+2026-02-26 16:49:10 [INFO] autotrader: SIMULATED BALANCE: $100.00 (actual account: $100247.56)
+2026-02-26 16:49:10 [INFO] autotrader: SIM — PDT ACTIVE (equity $100, 0 day trades used)
+2026-02-26 16:49:10 [INFO] autotrader: Cooldown active today for: BA
+2026-02-26 16:49:10 [INFO] autotrader: SIM — using sim portfolio for buy limits (cash $100.00, exposure $0.00, 0 pos)
+📊 $100.00 (+$0.00) · +$0.00 today · 0 pos · 0%

@@ -104,6 +104,29 @@ def api_cron_runs():
     return jsonify(runs[:50])
 
 
+@app.route("/api/config")
+def api_config():
+    """Return dashboard config (sim mode, etc.). Reads .env if env vars not set."""
+    sim_bal_raw = os.environ.get("SIMULATED_BALANCE", "")
+    if not sim_bal_raw:
+        # Try reading .env directly (dashboard runs outside Docker)
+        for env_path in [BASE_DIR / ".env", BASE_DIR.parent / ".env"]:
+            if env_path.exists():
+                for line in env_path.read_text().splitlines():
+                    line = line.strip()
+                    if line and not line.startswith("#") and "=" in line:
+                        k, _, v = line.partition("=")
+                        if k.strip() == "SIMULATED_BALANCE":
+                            sim_bal_raw = v.strip().strip('"').strip("'")
+                break
+    sim_bal = float(sim_bal_raw) if sim_bal_raw else 0.0
+    return jsonify({
+        "sim_mode": sim_bal > 0,
+        "simulated_balance": sim_bal,
+        "gateway_mode": os.environ.get("GATEWAY_MODE", "paper"),
+    })
+
+
 @app.route("/api/account")
 def api_account():
     """Get current account info from Alpaca."""

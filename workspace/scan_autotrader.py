@@ -51,7 +51,8 @@ from lib.config import LOGS_DIR
 from lib.pdt import (is_pdt_restricted, count_day_trades, day_trades_remaining,
                      would_be_day_trade, record_day_trade, cleanup_old_records)
 from lib.sim_portfolio import (init as sim_init, record_buy as sim_buy,
-                               record_sell as sim_sell)
+                               record_sell as sim_sell, get_summary as sim_get_summary,
+                               get_portfolio as sim_get_portfolio)
 
 try:
     from lib.discord_post import post_trades, update_dashboard, update_chart
@@ -120,9 +121,28 @@ RSI_SELL_HALF = 60             # RSI > 60 → sell half
 DAILY_DRAWDOWN_HALT = -0.02    # Halt buys if down >2% intraday
 
 _COOLDOWN_FILE = LOGS_DIR / "cooldown.json"
+_PARTIAL_SELL_FILE = LOGS_DIR / "partial_sell_today.json"
 _PEAK_FILE = LOGS_DIR / "trailing_peaks.json"
 _CHART_TS_FILE = LOGS_DIR / "last_chart_post.txt"
 CHART_INTERVAL_SEC = 1800     # Post chart at most once per 30 minutes
+
+
+def _load_partial_sell_today(today: str) -> set:
+    """Tickers already half-sold today. Prevents the halving spiral when scan runs repeatedly."""
+    if not _PARTIAL_SELL_FILE.exists():
+        return set()
+    try:
+        data = json.loads(_PARTIAL_SELL_FILE.read_text())
+        if data.get("date") == today:
+            return set(data.get("tickers", []))
+    except Exception:
+        pass
+    return set()
+
+
+def _save_partial_sell_today(today: str, tickers: set):
+    LOGS_DIR.mkdir(parents=True, exist_ok=True)
+    _PARTIAL_SELL_FILE.write_text(json.dumps({"date": today, "tickers": sorted(tickers)}))
 
 
 def _load_cooldown(today: str) -> set:
@@ -227,6 +247,8 @@ def main():
     now = datetime.utcnow().isoformat() + "Z"
     today = now[:10]
 
+    order_errors = []
+
     account = get_account()
     if not account:
         logger.error("Failed to get account")
@@ -242,10 +264,11 @@ def main():
         logger.info("SIMULATED BALANCE: $%.2f (actual account: $%.2f)",
                     equity, actual_equity)
 
-    # PDT protection (live mode, accounts < $25K)
-    pdt_active = LIVE_MODE and is_pdt_restricted(equity)
-    if LIVE_MODE:
-        logger.info("LIVE MODE — PDT %s (equity $%.0f, %d day trades used)",
+    # PDT protection — always enforced when equity (sim or real) is under $25K
+    pdt_active = is_pdt_restricted(equity)
+    if pdt_active or LIVE_MODE:
+        logger.info("%s — PDT %s (equity $%.0f, %d day trades used)",
+                    "LIVE" if LIVE_MODE else "SIM",
                     "ACTIVE" if pdt_active else "exempt (>$25K)",
                     equity, count_day_trades())
         cleanup_old_records()
@@ -253,6 +276,9 @@ def main():
     cooldown_tickers = _load_cooldown(today)
     if cooldown_tickers:
         logger.info("Cooldown active today for: %s", ", ".join(sorted(cooldown_tickers)))
+
+    # Tickers already half-sold today — skip further half-sells to prevent halving spiral
+    partial_sell_today = _load_partial_sell_today(today)
 
     peaks = _load_peaks()
 
@@ -347,13 +373,18 @@ def main():
             peaks.pop(ticker, None)
             continue
 
-        # Profit-take half: +4% (PDT-checked)
+        # Profit-take half: +4% (PDT-checked, max once per ticker per day)
         if plpc >= PROFIT_TAKE_HALF_PCT:
+            if ticker in partial_sell_today:
+                logger.info("Skipping profit-take-half %s: already half-sold today", ticker)
+                continue
             if not _check_pdt(ticker, "sell", today, todays_decisions, pdt_active):
                 continue
             sell_qty = min(qty / 2, available_qty)
             if sell_qty > 0.0001:
                 sell(ticker, sell_qty)
+                partial_sell_today.add(ticker)
+                _save_partial_sell_today(today, partial_sell_today)
                 sell_candidates.append((ticker, sell_qty, 0, "profit-take-half"))
                 log_decision({"timestamp": now, "action": "sell", "ticker": ticker,
                               "shares": sell_qty,
@@ -397,6 +428,32 @@ def main():
     remaining_bp = float(acct.get("buying_power", 0)) if acct else 0
     current_exposure = _total_market_value(positions)
     n_positions = len(positions)
+    sim_limits_line = None
+
+    # In sim mode, use sim portfolio for buy limits so we can open positions with $100
+    if sim_mode:
+        sim_data = sim_get_portfolio()
+        if sim_data:
+            pos_prices = {p["ticker"]: float(p.get("current_price", 0))
+                          for p in positions}
+            sim_pos = sim_data.get("positions", {})
+            for t, pos in sim_pos.items():
+                if t not in pos_prices:
+                    pos_prices[t] = float(pos.get("avg_entry", 0))
+            sim_sum = sim_get_summary(pos_prices)
+            remaining_bp = sim_sum.get("cash", sim_data.get("cash", 0))
+            current_exposure = sim_sum.get("market_value", 0)
+            n_positions = sim_sum.get("position_count", 0)
+            held_tickers = set(sim_pos.keys())
+            logger.info("SIM — using sim portfolio for buy limits (cash $%.2f, exposure $%.2f, %d pos)",
+                        remaining_bp, current_exposure, n_positions)
+            sim_limits_line = (
+                f"SIM buy limits: cash ${remaining_bp:,.2f}, "
+                f"exposure ${current_exposure:,.2f}, {n_positions} pos"
+            )
+
+    # In sim mode, track why we skip each low-RSI ticker so we can report "why no buy" in Discord
+    skip_reasons = []
 
     for tickers in groups:
         bars_data = get_bars(tickers, days=60)
@@ -428,13 +485,19 @@ def main():
                     sell_qty = min(qty, available_qty)
                     reason = f"RSI sell-all ({rsi:.1f})"
                 elif rsi > RSI_SELL_HALF:
-                    sell_qty = min(qty / 2, available_qty)
-                    reason = f"RSI sell-half ({rsi:.1f})"
+                    if ticker in partial_sell_today:
+                        logger.info("Skipping RSI sell-half %s: already half-sold today", ticker)
+                    else:
+                        sell_qty = min(qty / 2, available_qty)
+                        reason = f"RSI sell-half ({rsi:.1f})"
                 if sell_qty > 0.0001:
                     if not _check_pdt(ticker, "sell", today, todays_decisions,
                                       pdt_active):
                         continue
                     sell(ticker, sell_qty)
+                    if "half" in reason:
+                        partial_sell_today.add(ticker)
+                        _save_partial_sell_today(today, partial_sell_today)
                     sell_candidates.append((ticker, sell_qty, rsi, reason))
                     log_decision({"timestamp": now, "action": "sell", "ticker": ticker,
                                   "shares": sell_qty, "reason": reason, "rsi": rsi,
@@ -444,19 +507,29 @@ def main():
                                  "reason": reason, "rsi": rsi, "shares": sell_qty})
             else:
                 # ── Entry filters (all must pass) ──
-                if rsi >= RSI_BUY_THRESHOLD:
+                rsi_buy_threshold = 35 if sim_mode else RSI_BUY_THRESHOLD  # sim: allow RSI<35 for more activity
+                if rsi >= rsi_buy_threshold:
                     continue
+                # From here, ticker has RSI below threshold — track skip reason for "why no buy" in sim mode
                 if ticker in cooldown_tickers:
+                    if sim_mode:
+                        skip_reasons.append((ticker, rsi, "cooldown"))
                     logger.info("Skipping buy %s: on stop-loss cooldown today", ticker)
                     continue
                 if buys_halted:
+                    if sim_mode:
+                        skip_reasons.append((ticker, rsi, "circuit_breaker"))
                     logger.info("Skipping buy %s: circuit breaker active", ticker)
                     continue
                 if n_positions >= MAX_POSITIONS:
+                    if sim_mode:
+                        skip_reasons.append((ticker, rsi, "max_pos"))
                     logger.info("Skipping buy %s: at max %d positions",
                                 ticker, MAX_POSITIONS)
                     continue
                 if current_exposure >= equity * MAX_EXPOSURE_PCT:
+                    if sim_mode:
+                        skip_reasons.append((ticker, rsi, "exposure"))
                     logger.info("Skipping buy %s: exposure %.1f%% >= %.0f%% cap",
                                 ticker, current_exposure / equity * 100,
                                 MAX_EXPOSURE_PCT * 100)
@@ -467,43 +540,67 @@ def main():
                 cur_close = close_prices[-1] if close_prices else 0
                 if len(close_prices) >= MIN_BARS_FOR_SMA:
                     sma = compute_sma(close_prices, SMA_PERIOD)
-                if sma and cur_close < sma * 0.95:
-                    logger.info("Skipping buy %s: price $%.2f > 5%% below SMA%d $%.2f",
-                                ticker, cur_close, SMA_PERIOD, sma)
+                sma_max_drawdown = 0.15 if sim_mode else 0.05
+                if sma and cur_close < sma * (1 - sma_max_drawdown):
+                    if sim_mode:
+                        skip_reasons.append((ticker, rsi, "below_sma"))
+                    logger.info("Skipping buy %s: price $%.2f > %.0f%% below SMA%d $%.2f",
+                                ticker, cur_close, sma_max_drawdown * 100, SMA_PERIOD, sma)
                     continue
 
-                # Volume confirmation: not abnormally low (IEX volume underreports)
+                # Volume confirmation (sim: 25% of avg ok so IEX underreport / low-volume names can trade)
                 vol_avg = avg_volume(bars, 20)
                 last_vol = bars[-1].get("volume", 0) if bars else 0
-                if vol_avg and vol_avg > 0 and last_vol < vol_avg * VOLUME_SPIKE_RATIO:
+                vol_ratio_required = 0.25 if sim_mode else VOLUME_SPIKE_RATIO
+                if vol_avg and vol_avg > 0 and last_vol < vol_avg * vol_ratio_required:
+                    if sim_mode:
+                        skip_reasons.append((ticker, rsi, "low_vol"))
                     logger.info("Skipping buy %s: volume %d < %.0f (%.1fx avg required)",
-                                ticker, last_vol, vol_avg * VOLUME_SPIKE_RATIO,
-                                VOLUME_SPIKE_RATIO)
+                                ticker, last_vol, vol_avg * vol_ratio_required,
+                                vol_ratio_required)
                     continue
 
-                # RSI momentum: must be turning up (not still falling)
-                if not rsi_turning_up(close_prices):
+                # RSI momentum: must be turning up (in sim mode we allow flat/falling to get more activity)
+                if not sim_mode and not rsi_turning_up(close_prices):
                     logger.info("Skipping buy %s: RSI %.1f still falling", ticker, rsi)
                     continue
+                if sim_mode and not rsi_turning_up(close_prices):
+                    skip_reasons.append((ticker, rsi, "rsi_falling"))
+                    # In sim we still allow the buy (don't continue) so the $100 sim stays active
 
                 # ── Sizing (notional / dollar-based for fractional share support) ──
                 alloc_pct = ALLOC_STRONG if rsi < RSI_STRONG_THRESHOLD else ALLOC_NORMAL
                 max_new_exposure = equity * MAX_EXPOSURE_PCT - current_exposure
                 if max_new_exposure <= 0:
+                    if sim_mode:
+                        skip_reasons.append((ticker, rsi, "exposure"))
                     continue
-                acct = get_account()
-                fresh_bp = float(acct.get("buying_power", 0)) if acct else 0
-                buying_power = min(remaining_bp, fresh_bp) * BUY_BUFFER
+                # In sim mode use only sim cash; otherwise cap by real buying power
+                if sim_mode:
+                    buying_power = remaining_bp * BUY_BUFFER
+                else:
+                    acct = get_account()
+                    fresh_bp = float(acct.get("buying_power", 0)) if acct else 0
+                    buying_power = min(remaining_bp, fresh_bp) * BUY_BUFFER
                 notional = equity * alloc_pct
                 notional = min(notional, max_new_exposure, buying_power)
                 if notional < 1.0:
+                    if sim_mode:
+                        skip_reasons.append((ticker, rsi, "notional<1"))
                     logger.info("Skipping buy %s: notional $%.2f too small", ticker,
                                 notional)
                     continue
                 if not _check_pdt(ticker, "buy", today, todays_decisions, pdt_active):
+                    if sim_mode:
+                        skip_reasons.append((ticker, rsi, "pdt"))
                     continue
 
-                buy_notional(ticker, notional)
+                try:
+                    buy_notional(ticker, notional)
+                except Exception as e:
+                    logger.error("BUY FAILED %s $%.2f: %s", ticker, notional, e)
+                    order_errors.append(f"BUY FAILED {ticker} ${notional:,.2f}: {e}")
+                    continue
                 remaining_bp = max(0, remaining_bp - notional)
                 current_exposure += notional
                 n_positions += 1
@@ -518,15 +615,19 @@ def main():
                               }})
                 log_outcome({"timestamp": now, "ticker": ticker, "action": "buy",
                              "reason": f"RSI {rsi:.1f}", "notional": round(notional, 2)})
+                if sim_mode:
+                    held_tickers.add(ticker)
 
     # === PHASE 3: Add to winners when cash is too high ===
     if not buys_halted:
         acct = get_account()
-        cash_now = float(acct.get("cash", 0)) if acct else 0
+        cash_now = remaining_bp if sim_mode else (float(acct.get("cash", 0)) if acct else 0)
         positions = get_positions()
-        current_exposure = _total_market_value(positions)
+        if not sim_mode:
+            current_exposure = _total_market_value(positions)
         if cash_now > equity * ADD_TO_WINNERS_CASH_PCT:
-            winners = [p for p in positions
+            candidate_positions = positions if not sim_mode else [p for p in positions if p["ticker"] in held_tickers]
+            winners = [p for p in candidate_positions
                        if float(p.get("unrealized_plpc", 0) or 0) >= ADD_TO_WINNER_MIN_PLPC]
             winners.sort(key=lambda x: -float(x.get("unrealized_plpc", 0) or 0))
             for pos in winners[:3]:
@@ -542,10 +643,16 @@ def main():
                 notional = min(
                     equity * ADD_TO_WINNER_ALLOC,
                     equity * ADD_TO_WINNER_MAX_PCT - mv,
-                    equity * MAX_EXPOSURE_PCT - current_exposure)
+                    equity * MAX_EXPOSURE_PCT - current_exposure,
+                    cash_now * BUY_BUFFER)
                 if notional < 1.0:
                     continue
-                buy_notional(ticker, notional)
+                try:
+                    buy_notional(ticker, notional)
+                except Exception as e:
+                    logger.error("BUY FAILED %s $%.2f (add-to-winner): %s", ticker, notional, e)
+                    order_errors.append(f"BUY FAILED {ticker} ${notional:,.2f} (add-to-winner): {e}")
+                    continue
                 current_exposure += notional
                 plpc = float(pos.get("unrealized_plpc", 0) or 0)
                 buy_candidates.append((ticker, notional, 0,
@@ -570,24 +677,35 @@ def main():
     # === Summary & Discord output ===
     final_equity = float(final_account.get("equity", 0)) if final_account else equity
     actual_equity = final_equity
-    daily_pl = sum(float(p.get("unrealized_pl", 0) or 0) for p in final_positions)
-    n_pos = len(final_positions)
-    exposure = _total_market_value(final_positions)
-    # When simulated, use cap for display; otherwise actual equity
-    display_equity = equity if SIMULATED_BALANCE > 0 else final_equity
-    exposure_pct = (exposure / display_equity * 100) if display_equity > 0 else 0
+
+    # In sim mode, derive display stats from the virtual $100 portfolio, not the real account
+    if sim_mode:
+        _sim_price_map = {p["ticker"]: float(p.get("current_price", 0))
+                          for p in final_positions}
+        sim_summary = sim_get_summary(_sim_price_map)
+        daily_pl = sim_summary.get("unrealized_pl", 0)
+        n_pos = sim_summary.get("position_count", 0)
+        exposure = sim_summary.get("market_value", 0)
+        display_equity = sim_summary.get("equity", SIMULATED_BALANCE)
+        exposure_pct = sim_summary.get("exposure_pct", 0)
+        from_start = sim_summary.get("total_pl", 0)
+    else:
+        sim_summary = None
+        daily_pl = sum(float(p.get("unrealized_pl", 0) or 0) for p in final_positions)
+        n_pos = len(final_positions)
+        exposure = _total_market_value(final_positions)
+        display_equity = final_equity
+        exposure_pct = (exposure / display_equity * 100) if display_equity > 0 else 0
+        from_start = final_equity - 100_000
 
     eq_str = (f"${display_equity / 1_000_000:.1f}M" if display_equity >= 1_000_000
               else f"${display_equity / 1_000:.1f}K" if display_equity >= 1_000
-              else f"${display_equity:,.0f}")
+              else f"${display_equity:,.2f}")
     pl_sign = "+" if daily_pl >= 0 else ""
     pl_pct = (daily_pl / display_equity * 100) if display_equity > 0 else 0
-    start_val = SIMULATED_BALANCE if SIMULATED_BALANCE > 0 else 100_000
-    # When sim: show actual above cap; else normal all-time change
-    from_start = (actual_equity - SIMULATED_BALANCE) if SIMULATED_BALANCE > 0 else (final_equity - start_val)
     from_sign = "+" if from_start >= 0 else ""
-    status_line = (f"📊 {eq_str} ({from_sign}${from_start:,.0f})"
-                   f" · {pl_sign}${daily_pl:,.0f} today"
+    status_line = (f"📊 {eq_str} ({from_sign}${from_start:,.2f})"
+                   f" · {pl_sign}${daily_pl:,.2f} today"
                    f" · {n_pos} pos · {exposure_pct:.0f}%")
 
     held = {p["ticker"] for p in final_positions}
@@ -613,6 +731,16 @@ def main():
     # ── #cycles (stdout → OpenClaw): clean, no log lines ──
     # Always print status line for cron heartbeat monitoring
     cycle_lines = [status_line]
+    if sim_limits_line:
+        cycle_lines.append(sim_limits_line)
+    if order_errors:
+        cycle_lines.append("Errors: " + " | ".join(order_errors[:2]))
+    if sim_mode and not buy_candidates and (remaining_bp or 0) >= 1:
+        if skip_reasons:
+            why = "; ".join(f"{t} RSI{r:.0f}({reason})" for t, r, reason in skip_reasons[:5])
+            cycle_lines.append("No buy: " + why)
+        else:
+            cycle_lines.append("No buy: no ticker with RSI<35 this run")
     if sell_candidates:
         sold_parts = []
         for t, q, _, reason in sell_candidates:
@@ -628,7 +756,15 @@ def main():
     if watches:
         cycle_lines.append(
             "👀 " + ", ".join(f"{t} RSI {r:.0f}" for t, r in watches))
-    print("\n".join(cycle_lines))
+    cycle_text = "\n".join(cycle_lines)
+    print(cycle_text)
+    try:
+        cycle_log = LOGS_DIR / "scan_cycles.log"
+        LOGS_DIR.mkdir(parents=True, exist_ok=True)
+        with open(cycle_log, "a", encoding="utf-8") as f:
+            f.write(now[:19] + " " + cycle_text.replace("\n", " | ") + "\n")
+    except OSError:
+        pass
 
     # ── Self-improvement logging (always) ──
     decisions_today = [d for d in load_recent_decisions(limit=500)
@@ -646,17 +782,21 @@ def main():
     rotate_decisions_log()
 
     # ── #dashboard: compact overview with risk alerts ──
-    near_stop = [p for p in final_positions
-                 if float(p.get("unrealized_plpc", 0) or 0) < -0.02]
-    top_winners = sorted(final_positions,
-                         key=lambda x: -float(x.get("unrealized_plpc", 0) or 0))[:5]
-    if SIMULATED_BALANCE > 0:
+    if sim_summary:
+        _display_positions = sim_summary.get("positions", [])
+        near_stop = [p for p in _display_positions if p.get("unrealized_plpc", 0) < -0.02]
+        top_winners = sorted(_display_positions, key=lambda x: -x.get("unrealized_plpc", 0))[:5]
+        sim_cash = sim_summary.get("cash", 0)
         dash = [
-            f"**📊 AutoTrader** — {eq_str} sim cap (actual ${actual_equity:,.0f})",
-            f"P&L today: {pl_sign}${daily_pl:,.0f} ({pl_sign}{pl_pct:.1f}%)"
-            f" · {n_pos} positions · {exposure_pct:.0f}% exposure",
+            f"**📊 AutoTrader (SIM ${SIMULATED_BALANCE:.0f})** — {eq_str} ({from_sign}${from_start:.2f} all-time)",
+            f"Cash: ${sim_cash:.2f} · {n_pos} pos · {exposure_pct:.0f}% exposure"
+            f" (actual acct: ${actual_equity:,.0f})",
         ]
     else:
+        near_stop = [p for p in final_positions
+                     if float(p.get("unrealized_plpc", 0) or 0) < -0.02]
+        top_winners = sorted(final_positions,
+                             key=lambda x: -float(x.get("unrealized_plpc", 0) or 0))[:5]
         dash = [
             f"**📊 AutoTrader** — {eq_str} ({from_sign}${from_start:,.0f} all-time)",
             f"P&L today: {pl_sign}${daily_pl:,.0f} ({pl_sign}{pl_pct:.1f}%)"

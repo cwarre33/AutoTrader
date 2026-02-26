@@ -1,0 +1,28 @@
+{
+  "version": 1,
+  "jobs": [
+    {
+      "id": "scan-every-minute",
+      "agentId": "main",
+      "name": "scan-every-minute",
+      "enabled": true,
+      "notify": true,
+      "schedule": {
+        "kind": "every",
+        "everyMs": 60000,
+        "anchorMs": 0
+      },
+      "sessionTarget": "isolated",
+      "wakeMode": "now",
+      "payload": {
+        "kind": "agentTurn",
+        "message": "Run: python scan_autotrader.py — then post ONLY the exact script output. No preambles. No headers, no commentary. Just the raw output lines. Plain text only.\n\nReturn your summary as plain text; it will be delivered automatically. If the task explicitly calls for messaging a specific external recipient, note who/where it should go instead of sending it yourself."
+      },
+      "delivery": {
+        "mode": "announce",
+        "channel": "discord",
+        "to": "channel:1474503699903680756"
+      }
+    }
+  ]
+}

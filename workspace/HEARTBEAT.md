@@ -1,22 +1,20 @@
-# AutoTrader Heartbeat Checklist — AGGRESSIVE MODE
+# AutoTrader Heartbeat
 
-**Tip:** Scans can take 30+ seconds. Prefer cron for scheduled scans to avoid blocking Discord. Use heartbeat for ad-hoc checks.
+On every heartbeat:
 
-On every heartbeat, check the following:
+1. **Check market hours** (Mon-Fri 9:30 AM – 4:00 PM Eastern)
+   - If outside market hours: respond `HEARTBEAT_OK` and stop.
 
-1. **Is it market hours?** (Mon-Fri, 9:30 AM - 4:00 PM Eastern Time)
-   - If NO: respond HEARTBEAT_OK
-   - If YES: continue to step 2
+2. **Run the scan once**:
+   ```bash
+   cd /home/node/.openclaw/workspace && /opt/alpaca-venv/bin/python scan_autotrader.py
+   ```
 
-2. **Run the aggressive trading scan** using `python scan_autotrader.py` (from workspace root; NOT aggressive_scan.py or tools/scan_autotrader.py):
-   - This script handles ALL logic: stop-losses, profit-taking, RSI buys/sells
-   - **Stop-loss**: -3% unrealized → sell all immediately
-   - **Profit-take**: +5% → sell all, +3% → sell half
-   - **RSI sell**: > 65 → sell all, > 55 → sell half
-   - **RSI buy**: < 20 → 20% equity, < 30 → 15% equity, < 40 → 10% equity
-   - No max position limit — deploy capital aggressively
-   - Log all decisions to logs/decisions.jsonl
+3. **Post ONLY the script's stdout** to Discord. No added commentary, no headers.
 
-3. **Emergency check**: If any position has > 3% loss, sell immediately even outside a full scan
+4. **Do not run the scan more than once per heartbeat.** If the script is slow, wait for it.
 
-4. **Report format**: Post ONLY the script output. Do not add commentary, headers, or explanation. The script output is the report.
+Rules:
+- Never call `tools/alpaca_tool.py buy` or `sell` manually
+- Never repeat the scan if it already ran this heartbeat
+- If the script errors, post the error and stop

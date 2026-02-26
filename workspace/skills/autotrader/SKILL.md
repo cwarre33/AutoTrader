@@ -4,107 +4,22 @@ description: Autonomous paper trading bot — RSI mean-reversion strategy on US 
 trigger: cron
 ---
 
-# AutoTrader — Autonomous Paper Trading Skill
+# AutoTrader — Trading Scan
 
-You are AutoTrader, an autonomous paper trading bot.
-
-**Primary scan:** Run `python scan_autotrader.py` from workspace root. This is the canonical entrypoint (uses lib/, retries, proper RSI). Path: `workspace/scan_autotrader.py` — NOT `workspace/tools/scan_autotrader.py` (does not exist).
-
-For manual Alpaca calls, use bash_tool with the commands below.
-
-## Safety Rails
-
-- **PAPER TRADING ONLY** — never switch to live trading
-- Max position size: 5% of equity per ticker
-- Never hold more than 10 positions simultaneously
-- Equities only — no options, no crypto
-- If any safety check fails, STOP and log the error
-
-## How to Call Alpaca
-
-Use bash_tool to run Python commands. All return JSON:
+**Run the scan script. Do not make manual trades.**
 
 ```bash
-python tools/alpaca_tool.py account          # Get equity, buying power
-python tools/alpaca_tool.py positions         # List held positions
-python tools/alpaca_tool.py bars AAPL,MSFT,NVDA --days 30   # Historical bars
-python tools/alpaca_tool.py snapshot AAPL     # Current price
-python tools/alpaca_tool.py buy AAPL 10       # Buy 10 shares
-python tools/alpaca_tool.py sell AAPL 10      # Sell 10 shares
-python tools/alpaca_tool.py actions AAPL      # News/corporate actions
+cd /home/node/.openclaw/workspace && /opt/alpaca-venv/bin/python scan_autotrader.py
 ```
 
-See TOOLS.md for full documentation.
+The script handles everything:
+- RSI signals, position sizing, stop-losses, profit-taking
+- PDT protection (sub-$25K accounts: max 3 day trades per 5 days)
+- Simulated $100 balance mode (set via SIMULATED_BALANCE env var)
+- Discord reporting
 
-## Scan Procedure
+**After running, post ONLY the script's stdout output. No commentary.**
 
-Every cycle, follow this exact order:
+If the script errors, post the error message verbatim.
 
-1. **Check account**: `python tools/alpaca_tool.py account`
-2. **Check positions**: `python tools/alpaca_tool.py positions`
-3. **Check stop-losses first**: For every position with unrealized_plpc < -0.08, immediately sell
-4. **Scan watchlist bars** (batch to save calls):
-   `python tools/alpaca_tool.py bars AAPL,MSFT,NVDA,TSLA,AMZN,META,GOOG,AMD,INTC,BA --days 30`
-   `python tools/alpaca_tool.py bars DIS,NFLX,JPM,V,MA,UNH,XOM,CVX,PFE,KO --days 30`
-   `python tools/alpaca_tool.py bars WMT,COST,HD,CRM,ORCL,AVGO,MU,QCOM,SOFI,PLTR --days 30`
-5. **Compute RSI** from the close prices (see below)
-6. **Get snapshots** for any ticker with RSI signal: `python tools/alpaca_tool.py snapshot AAPL`
-7. **Check news** for buy/sell candidates: `python tools/alpaca_tool.py actions AAPL`
-
-## RSI Calculation
-
-Compute RSI(14) using Wilder's smoothing from the daily bar close prices:
-- For each bar: change = close[i] - close[i-1]
-- Gains = max(change, 0), Losses = abs(min(change, 0))
-- First avg_gain = mean of first 14 gains
-- First avg_loss = mean of first 14 losses
-- Then: avg_gain = (prev_avg_gain * 13 + current_gain) / 14
-- Then: avg_loss = (prev_avg_loss * 13 + current_loss) / 14
-- RS = avg_gain / avg_loss (if avg_loss == 0, RSI = 100)
-- RSI = 100 - (100 / (1 + RS))
-
-## Buy Rules
-
-- RSI < 20 = **strong buy** -> allocate up to 5% of equity
-- RSI 20-30 = **moderate buy** -> allocate 2-3% of equity
-- RSI >= 30 = no buy signal
-- Must have no strong bearish news
-- **Never** buy a ticker you already hold (check positions first)
-- **Never** buy a ticker sold at a loss in the last 5 trading days (check decision log)
-- Calculate shares: floor(allocation_dollars / current_price)
-- Execute: `python tools/alpaca_tool.py buy TICKER SHARES`
-
-## Sell Rules (held positions only)
-
-- **Stop-loss**: unrealized_plpc < -0.08 -> sell entire position immediately
-- RSI > 75 = **strong sell** -> sell entire position
-- RSI 60-75 = **partial sell** -> sell half (round down)
-- Strong bearish news -> sell entire position
-- Execute: `python tools/alpaca_tool.py sell TICKER SHARES`
-
-## Decision Logging — MANDATORY
-
-After every scan, append decisions to `logs/decisions.jsonl` (one JSON per line):
-
-```json
-{"timestamp":"2025-01-15T10:30:00-05:00","action":"buy","ticker":"NVDA","confidence":8,"rsi":22.5,"reasoning":"RSI oversold, no bearish news","shares":5,"price":125.50,"portfolio_value":98500.00}
-```
-
-Rules:
-- Always log "hold" too — no action is still a decision
-- Log at least one summary entry per cycle
-- Read recent entries before making decisions
-
-## Learning from History
-
-- Before buying, check the last 20 entries in logs/decisions.jsonl
-- Do NOT rebuy tickers sold at a loss within the last 5 trading days
-- If 3+ consecutive losses on a ticker, avoid it for 10 trading days
-
-## After Each Cycle
-
-Send the user a brief summary:
-- Portfolio value and daily P&L
-- Any trades executed
-- Top 3 tickers by RSI signal strength
-- If no trades: "Scan complete. No signals. Portfolio: $XX,XXX"
+Do NOT call `tools/alpaca_tool.py buy` or `sell` directly — all trading goes through `scan_autotrader.py`.

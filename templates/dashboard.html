@@ -15,6 +15,7 @@
 
   .header { background: var(--surface); border-bottom: 1px solid var(--border); padding: 12px 24px; display: flex; align-items: center; gap: 16px; }
   .header h1 { font-size: 18px; font-weight: 600; }
+  .sim-badge { background: rgba(210, 153, 34, 0.2); color: var(--yellow); border: 1px solid var(--yellow); border-radius: 6px; padding: 2px 10px; font-size: 12px; font-weight: 600; letter-spacing: 0.5px; }
   .status-dot { width: 10px; height: 10px; border-radius: 50%; display: inline-block; }
   .status-dot.online { background: var(--green); box-shadow: 0 0 6px var(--green); }
   .status-dot.offline { background: var(--red); }
@@ -88,6 +89,7 @@
 
 <div class="header">
   <h1>AutoTrader</h1>
+  <span id="simBadge" style="display:none" class="sim-badge">SIM</span>
   <span class="status-dot" id="statusDot"></span>
   <span id="statusText" style="font-size:13px; color:var(--muted)">Checking...</span>
   <div class="header-info" id="headerInfo"></div>
@@ -105,11 +107,11 @@
   <!-- Overview Panel -->
   <div class="panel active" id="panel-overview">
     <div class="stats-grid" id="statsGrid">
-      <div class="stat-card"><div class="stat-label">Equity</div><div class="stat-value" id="equity">--</div></div>
-      <div class="stat-card"><div class="stat-label">Buying Power</div><div class="stat-value" id="buyingPower">--</div></div>
+      <div class="stat-card"><div class="stat-label" id="labelEquity">Equity</div><div class="stat-value" id="equity">--</div></div>
+      <div class="stat-card"><div class="stat-label" id="labelSecond">Buying Power</div><div class="stat-value" id="buyingPower">--</div></div>
       <div class="stat-card"><div class="stat-label">Cash</div><div class="stat-value" id="cash">--</div></div>
       <div class="stat-card"><div class="stat-label">Open Positions</div><div class="stat-value" id="posCount">--</div></div>
-      <div class="stat-card"><div class="stat-label">Unrealized P&L</div><div class="stat-value" id="totalPL">--</div></div>
+      <div class="stat-card"><div class="stat-label" id="labelPL">Unrealized P&amp;L</div><div class="stat-value" id="totalPL">--</div></div>
       <div class="stat-card"><div class="stat-label">Last Cycle</div><div class="stat-value" id="lastCycle" style="font-size:14px">--</div></div>
     </div>
     <button class="refresh-btn" onclick="loadOverview()">Refresh</button>
@@ -199,23 +201,33 @@ function fmtTime(ts) {
   return d.toLocaleString('en-US', {month:'short', day:'numeric', hour:'2-digit', minute:'2-digit', second:'2-digit'});
 }
 
+// Config / sim mode
+let simMode = false;
+let simBalance = 0;
+
+async function loadConfig() {
+  try {
+    const res = await fetch('/api/config');
+    const cfg = await res.json();
+    simMode = cfg.sim_mode;
+    simBalance = cfg.simulated_balance;
+    if (simMode) {
+      document.getElementById('simBadge').style.display = '';
+      document.getElementById('simBadge').textContent = `SIM $${simBalance}`;
+      document.getElementById('labelEquity').textContent = 'Sim Equity';
+      document.getElementById('labelSecond').textContent = 'Actual Acct';
+      document.getElementById('labelPL').textContent = 'Total P&L';
+    }
+  } catch (e) {}
+}
+
 // Overview
 async function loadOverview() {
   try {
-    const [acctRes, posRes, statusRes] = await Promise.all([
-      fetch('/api/account'), fetch('/api/positions'), fetch('/api/status')
-    ]);
-    const acct = await acctRes.json();
-    const positions = await posRes.json();
+    const [statusRes] = await Promise.all([fetch('/api/status')]);
     const status = await statusRes.json();
 
-    if (!acct.error) {
-      document.getElementById('equity').textContent = fmt$(acct.equity);
-      document.getElementById('buyingPower').textContent = fmt$(acct.buying_power);
-      document.getElementById('cash').textContent = fmt$(acct.cash);
-    }
-
-    // Status
+    // Status indicators (always real)
     const dot = document.getElementById('statusDot');
     const stxt = document.getElementById('statusText');
     if (status.gateway) {
@@ -232,32 +244,82 @@ async function loadOverview() {
       document.getElementById('lastCycle').textContent = fmtTime(status.last_session_time);
     }
 
-    // Positions table
-    if (Array.isArray(positions) && positions.length > 0) {
-      let totalPL = 0;
-      const rows = positions.map(p => {
-        const pl = Number(p.unrealized_pl || 0);
-        totalPL += pl;
-        const plClass = pl >= 0 ? 'pl-positive' : 'pl-negative';
-        return `<tr>
-          <td><strong>${p.ticker}</strong></td>
-          <td>${p.qty}</td>
-          <td>${fmt$(p.avg_entry)}</td>
-          <td>${fmt$(p.current_price)}</td>
-          <td>${fmt$(p.market_value)}</td>
-          <td class="${plClass}">${fmt$(pl)}</td>
-          <td class="${plClass}">${fmtPct(p.unrealized_plpc)}</td>
-        </tr>`;
-      }).join('');
-      document.getElementById('positionsBody').innerHTML = rows;
-      document.getElementById('posCount').textContent = positions.length;
+    if (simMode) {
+      // Sim mode: primary stats from sim portfolio, secondary shows real acct equity
+      const [simRes, acctRes] = await Promise.all([fetch('/api/sim'), fetch('/api/account')]);
+      const sim = await simRes.json();
+      const acct = await acctRes.json();
 
-      const plEl = document.getElementById('totalPL');
-      plEl.textContent = fmt$(totalPL);
-      plEl.className = 'stat-value ' + (totalPL >= 0 ? 'positive' : 'negative');
+      if (!sim.error) {
+        document.getElementById('equity').textContent = fmt$(sim.equity);
+        document.getElementById('cash').textContent = fmt$(sim.cash);
+        document.getElementById('posCount').textContent = sim.position_count || 0;
+        const plEl = document.getElementById('totalPL');
+        const pl = sim.total_pl || 0;
+        plEl.textContent = (pl >= 0 ? '+' : '') + fmt$(pl) + ' (' + (sim.total_pl_pct >= 0 ? '+' : '') + sim.total_pl_pct.toFixed(2) + '%)';
+        plEl.className = 'stat-value ' + (pl >= 0 ? 'positive' : 'negative');
+      }
+      if (!acct.error) {
+        document.getElementById('buyingPower').textContent = fmt$(acct.equity);
+      }
+
+      // Positions table: show sim positions
+      const positions = (sim.positions || []);
+      if (positions.length > 0) {
+        const rows = positions.map(p => {
+          const pl = Number(p.unrealized_pl || 0);
+          const plClass = pl >= 0 ? 'pl-positive' : 'pl-negative';
+          return `<tr>
+            <td><strong>${p.ticker}</strong></td>
+            <td>${Number(p.shares).toFixed(4)}</td>
+            <td>${fmt$(p.avg_entry)}</td>
+            <td>${fmt$(p.current_price)}</td>
+            <td>${fmt$(p.market_value)}</td>
+            <td class="${plClass}">${fmt$(pl)}</td>
+            <td class="${plClass}">${(p.unrealized_plpc * 100).toFixed(2)}%</td>
+          </tr>`;
+        }).join('');
+        document.getElementById('positionsBody').innerHTML = rows;
+      } else {
+        document.getElementById('positionsBody').innerHTML = '<tr><td colspan="7" class="empty">No sim positions yet</td></tr>';
+      }
     } else {
-      document.getElementById('positionsBody').innerHTML = '<tr><td colspan="7" class="empty">No open positions</td></tr>';
-      document.getElementById('posCount').textContent = '0';
+      // Real mode: load actual Alpaca account + positions
+      const [acctRes, posRes] = await Promise.all([fetch('/api/account'), fetch('/api/positions')]);
+      const acct = await acctRes.json();
+      const positions = await posRes.json();
+
+      if (!acct.error) {
+        document.getElementById('equity').textContent = fmt$(acct.equity);
+        document.getElementById('buyingPower').textContent = fmt$(acct.buying_power);
+        document.getElementById('cash').textContent = fmt$(acct.cash);
+      }
+
+      if (Array.isArray(positions) && positions.length > 0) {
+        let totalPL = 0;
+        const rows = positions.map(p => {
+          const pl = Number(p.unrealized_pl || 0);
+          totalPL += pl;
+          const plClass = pl >= 0 ? 'pl-positive' : 'pl-negative';
+          return `<tr>
+            <td><strong>${p.ticker}</strong></td>
+            <td>${p.qty}</td>
+            <td>${fmt$(p.avg_entry)}</td>
+            <td>${fmt$(p.current_price)}</td>
+            <td>${fmt$(p.market_value)}</td>
+            <td class="${plClass}">${fmt$(pl)}</td>
+            <td class="${plClass}">${fmtPct(p.unrealized_plpc)}</td>
+          </tr>`;
+        }).join('');
+        document.getElementById('positionsBody').innerHTML = rows;
+        document.getElementById('posCount').textContent = positions.length;
+        const plEl = document.getElementById('totalPL');
+        plEl.textContent = fmt$(totalPL);
+        plEl.className = 'stat-value ' + (totalPL >= 0 ? 'positive' : 'negative');
+      } else {
+        document.getElementById('positionsBody').innerHTML = '<tr><td colspan="7" class="empty">No open positions</td></tr>';
+        document.getElementById('posCount').textContent = '0';
+      }
     }
   } catch (e) {
     console.error('Failed to load overview:', e);
@@ -448,7 +510,7 @@ document.getElementById('chatInput').addEventListener('keydown', e => {
 });
 
 // Initial load
-loadOverview();
+loadConfig().then(() => loadOverview());
 
 // Auto-refresh every 30s
 setInterval(() => {

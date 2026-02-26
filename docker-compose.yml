@@ -21,8 +21,9 @@ services:
       ALPACA_SECRET_KEY: ${ALPACA_SECRET_KEY}
       ALPACA_PAPER_TRADE: "True"
       OPENAI_API_KEY: ${OPENAI_API_KEY:-}
-      SIMULATED_BALANCE: ${SIMULATED_BALANCE:-0}
-      GATEWAY_MODE: ${GATEWAY_MODE:-paper}
+      # Simulated $100 live: trade as if $100 equity, enforce PDT (3 day trades / 5 days)
+      SIMULATED_BALANCE: ${SIMULATED_BALANCE:-100}
+      GATEWAY_MODE: ${GATEWAY_MODE:-live}
     volumes:
       - ./openclaw-config:/home/node/.openclaw
       - ./workspace:/home/node/.openclaw/workspace

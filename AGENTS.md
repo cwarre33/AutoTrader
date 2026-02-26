@@ -65,15 +65,15 @@ No automated test suite exists. Verify by:
 
 If Alpaca API keys are regenerated, the `.env` file must be regenerated and the gateway restarted (`docker compose down && docker compose up -d openclaw-gateway`). The `alpaca_client.py` module caches clients at module level, so a container restart is required for key changes to take effect.
 
-### Live trading mode
+### Default: simulated $100 + PDT + cron every minute
 
-Set `GATEWAY_MODE=live` in `.env` to enable live-trading safeguards:
+After `docker compose down` and `docker compose up`, the gateway runs with:
 
-- **PDT protection** (`lib/pdt.py`): Tracks day trades in `logs/pdt_trades.jsonl`. Accounts under $25K are limited to 3 day trades per 5-business-day window. Stop-losses always execute (capital protection overrides PDT). Profit-taking and RSI sells are PDT-checked.
-- **Expensive stock handling**: Stocks where allocation rounds to 0 shares are skipped with a log message instead of erroring.
-- All strategy parameters are at the top of `workspace/scan_autotrader.py` for easy tuning.
+- **Simulated $100 balance** (`SIMULATED_BALANCE=100`): Scanner uses $100 as effective equity; Alpaca paper account is unchanged.
+- **PDT enforced** (`GATEWAY_MODE=live`): Pattern Day Trader rules apply (3 day trades per 5-business-day window for accounts under $25K). Stop-losses always execute; profit-taking and RSI sells are PDT-checked. See `lib/pdt.py` and `logs/pdt_trades.jsonl`.
+- **Cron every minute**: If `openclaw-config/cron/jobs.json` is missing, the entrypoint seeds it from `config/cron-jobs-default.json` (one job: run `scan_autotrader.py` every 60s). Existing `jobs.json` is never overwritten.
 
-To switch to live: change `ALPACA_PAPER_TRADE` to `False` in docker-compose.yml and set `GATEWAY_MODE=live` in `.env`. Start during off-hours so you can watch the first scans.
+To use full account / paper mode instead: set `SIMULATED_BALANCE=0` and `GATEWAY_MODE=paper` in `.env`. To run real live trading: set `ALPACA_PAPER_TRADE` to `False` in docker-compose.yml and keep `GATEWAY_MODE=live`; start during off-hours.
 
 ### Docker in Cloud VM
 
